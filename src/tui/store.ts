@@ -14,6 +14,29 @@ import type {
 
 export type TUIMode = "stream" | "compose" | "gate" | "thinking";
 
+export interface ToolProposal {
+  id: MessageId;
+  tool_name: string;
+  arguments: Record<string, unknown>;
+  agent: ParticipantId;
+  risk_level: string;
+  description: string;
+  category: string;
+}
+
+export interface ToolOutput {
+  proposalId: MessageId;
+  stdout: string;
+  stderr: string;
+  complete: boolean;
+  result?: {
+    success: boolean;
+    exitCode?: number;
+    error?: string;
+    duration_ms?: number;
+  };
+}
+
 export interface TUIState {
   // Connection
   connected: boolean;
@@ -26,6 +49,10 @@ export interface TUIState {
   messages: AnyMessage[];
   context: Map<string, ContextItem>;
   pendingGates: Map<MessageId, GateState>;
+
+  // Tool execution
+  toolProposals: Map<MessageId, ToolProposal>;
+  toolOutputs: Map<MessageId, ToolOutput>;
 
   // UI state
   mode: TUIMode;
@@ -60,6 +87,8 @@ export const useTUIStore = create<TUIState>((set, get) => ({
   messages: [],
   context: new Map(),
   pendingGates: new Map(),
+  toolProposals: new Map(),
+  toolOutputs: new Map(),
   mode: "stream",
   draftPrompt: "",
   currentThinking: "",
@@ -255,6 +284,75 @@ export const useTUIStore = create<TUIState>((set, get) => ({
           }
           break;
 
+        case "tool.propose":
+          {
+            const proposal: ToolProposal = {
+              id: message.id,
+              tool_name: message.payload.tool_name,
+              arguments: message.payload.arguments,
+              agent: message.payload.agent,
+              risk_level: message.payload.risk_level,
+              description: message.payload.description,
+              category: message.payload.category,
+            };
+            state.toolProposals.set(message.id, proposal);
+            set({ toolProposals: new Map(state.toolProposals) });
+          }
+          break;
+
+        case "tool.output":
+          {
+            const proposalId = message.payload.tool_proposal;
+            let output = state.toolOutputs.get(proposalId);
+
+            if (!output) {
+              output = {
+                proposalId,
+                stdout: "",
+                stderr: "",
+                complete: false,
+              };
+              state.toolOutputs.set(proposalId, output);
+            }
+
+            if (message.payload.stream === "stdout") {
+              output.stdout += message.payload.text;
+            } else if (message.payload.stream === "stderr") {
+              output.stderr += message.payload.text;
+            }
+
+            output.complete = message.payload.complete;
+            set({ toolOutputs: new Map(state.toolOutputs) });
+          }
+          break;
+
+        case "tool.result":
+          {
+            const proposalId = message.payload.tool_proposal;
+            let output = state.toolOutputs.get(proposalId);
+
+            if (!output) {
+              output = {
+                proposalId,
+                stdout: "",
+                stderr: "",
+                complete: true,
+              };
+              state.toolOutputs.set(proposalId, output);
+            }
+
+            const shellResult = message.payload.result as { exitCode?: number; stdout?: string; stderr?: string } | undefined;
+            output.result = {
+              success: message.payload.success,
+              exitCode: shellResult?.exitCode,
+              error: message.payload.error,
+              duration_ms: message.payload.duration_ms,
+            };
+            output.complete = true;
+            set({ toolOutputs: new Map(state.toolOutputs) });
+          }
+          break;
+
         case "tool.execute":
           {
             const gate = state.pendingGates.get(message.payload.tool_proposal);
@@ -298,6 +396,8 @@ export const useTUIStore = create<TUIState>((set, get) => ({
       messages: [],
       context: new Map(),
       pendingGates: new Map(),
+      toolProposals: new Map(),
+      toolOutputs: new Map(),
     });
   },
 

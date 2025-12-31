@@ -24,6 +24,8 @@ export function App({
     messages,
     participants,
     pendingGates,
+    toolProposals,
+    toolOutputs,
     mode,
     draftPrompt,
     currentThinking,
@@ -139,12 +141,42 @@ export function App({
               <Text color="gray">{msg.payload.text}</Text>
             )}
             {msg.type === "tool.propose" && (
-              <Text color="yellow">
-                🔧 {msg.payload.tool_name} ({msg.payload.category})
-              </Text>
+              <Box flexDirection="column">
+                <Text color="yellow">
+                  🔧 Tool Proposal: <Text bold>{msg.payload.tool_name}</Text>
+                </Text>
+                <Text color="yellow" dimColor>
+                  {" "}└─ {msg.payload.description}
+                </Text>
+                <Text color="yellow" dimColor>
+                  {" "}└─ Risk: {msg.payload.risk_level} | Category: {msg.payload.category}
+                </Text>
+              </Box>
             )}
             {msg.type === "tool.execute" && (
-              <Text color="green">✓ Tool approved and executing</Text>
+              <Text color="green">✓ Tool approved - executing...</Text>
+            )}
+            {msg.type === "tool.output" && !msg.payload.complete && (
+              <Text color="cyan" dimColor>
+                {msg.payload.stream === "stderr" ? (
+                  <Text color="red">{msg.payload.text}</Text>
+                ) : (
+                  msg.payload.text
+                )}
+              </Text>
+            )}
+            {msg.type === "tool.result" && (
+              <Box flexDirection="column">
+                <Text color={msg.payload.success ? "green" : "red"}>
+                  {msg.payload.success ? "✓" : "✗"} Tool {msg.payload.success ? "completed" : "failed"}
+                  {" "}({msg.payload.duration_ms}ms)
+                </Text>
+                {msg.payload.error && (
+                  <Text color="red" dimColor>
+                    {" "}└─ Error: {msg.payload.error}
+                  </Text>
+                )}
+              </Box>
             )}
             {msg.type === "gate.request" && (
               <Text color="red">⚠️  {msg.payload.message}</Text>
@@ -171,16 +203,38 @@ export function App({
       {/* Gate Prompt */}
       {mode === "gate" && pendingGates.size > 0 && (
         <Box borderStyle="double" borderColor="yellow" paddingX={1}>
-          {Array.from(pendingGates.entries()).slice(0, 1).map(([id, gate]) => (
-            <Box key={id} flexDirection="column">
-              <Text bold color="yellow">
-                GATE: {gate.request.message}
-              </Text>
-              <Text>
-                [a]pprove | [r]eject
-              </Text>
-            </Box>
-          ))}
+          {Array.from(pendingGates.entries()).slice(0, 1).map(([id, gate]) => {
+            // Find the associated tool proposal if this is a tool gate
+            const toolProposal = gate.request.action_type === "tool"
+              ? toolProposals.get(gate.request.action_ref)
+              : null;
+
+            return (
+              <Box key={id} flexDirection="column">
+                <Text bold color="yellow">
+                  GATE: {gate.request.message}
+                </Text>
+                {toolProposal && (
+                  <>
+                    <Text color="yellow" dimColor>
+                      Tool: {toolProposal.tool_name} ({toolProposal.category})
+                    </Text>
+                    <Text color="yellow" dimColor>
+                      Risk Level: {toolProposal.risk_level}
+                    </Text>
+                    {toolProposal.arguments.full_command && (
+                      <Text color="cyan" dimColor>
+                        Command: {String(toolProposal.arguments.full_command)}
+                      </Text>
+                    )}
+                  </>
+                )}
+                <Text>
+                  [a]pprove | [r]eject
+                </Text>
+              </Box>
+            );
+          })}
         </Box>
       )}
 

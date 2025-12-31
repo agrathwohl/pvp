@@ -5,6 +5,7 @@ A **multiplayer, role-based coordination protocol** for human-AI collaborative d
 ## Overview
 
 PVP is NOT a chatbot. It's a coordination layer where multiple humans and AI agents collaborate in real-time to:
+
 - Shape prompts collaboratively
 - Observe AI reasoning
 - Gate actions before execution
@@ -110,6 +111,7 @@ const config: SessionConfig = {
 ```
 
 **Quorum Rules**:
+
 - `any`: N approvals from anyone
 - `all`: All approvers must approve
 - `role`: N approvals from specific role
@@ -143,7 +145,9 @@ const client = new WebSocketClient("ws://localhost:3000", ulid());
 client.on("connected", () => {
   const createMsg = createMessage("session.create", ulid(), participantId, {
     name: "My Session",
-    config: { /* ... */ },
+    config: {
+      /* ... */
+    },
   });
   client.send(createMsg);
 });
@@ -152,20 +156,21 @@ client.connect();
 ```
 
 See `examples/` directory for complete examples:
+
 - `basic-session.ts` - Single participant session
 - `multi-participant.ts` - Multiple humans collaborating
 
 ## TUI Controls
 
-| Key | Mode | Action |
-|-----|------|--------|
-| `p` | stream | Start composing prompt |
-| `Ctrl+Enter` | compose | Submit prompt |
-| `Esc` | compose | Cancel composition |
-| `a` | gate | Approve gate |
-| `r` | gate | Reject gate |
-| `t` | stream | Toggle thinking panel |
-| `Ctrl+C` | any | Exit |
+| Key          | Mode    | Action                 |
+| ------------ | ------- | ---------------------- |
+| `p`          | stream  | Start composing prompt |
+| `Ctrl+Enter` | compose | Submit prompt          |
+| `Esc`        | compose | Cancel composition     |
+| `a`          | gate    | Approve gate           |
+| `r`          | gate    | Reject gate            |
+| `t`          | stream  | Toggle thinking panel  |
+| `Ctrl+C`     | any     | Exit                   |
 
 ## Protocol Specification
 
@@ -216,7 +221,7 @@ Real-time bidirectional communication for TUI clients.
 
 ### T.140 (Audio Integration)
 
-Experimental support for audio transcription streams (e.g., from meetings).
+Experimental support for T.140 RTP streams for audio transcriptions (e.g., from meetings).
 
 See `src/transports/t140.ts` for implementation.
 
@@ -253,15 +258,16 @@ npm test
 import { createMessage } from "./src/protocol/messages.js";
 
 const message = createMessage(
-  "prompt.submit",  // type
-  sessionId,        // session
-  participantId,    // sender
-  {                 // payload
+  "prompt.submit", // type
+  sessionId, // session
+  participantId, // sender
+  {
+    // payload
     content: "Build a login form",
     target_agent: "claude_01",
     contributors: [participantId],
-    context_keys: ["requirements"]
-  }
+    context_keys: ["requirements"],
+  },
 );
 ```
 
@@ -331,6 +337,7 @@ pm2 start dist/server/index.js --name pvp-server
 ## Contributing
 
 This is an implementation of the PVP specification. Contributions should:
+
 1. Follow the protocol specification precisely
 2. Maintain type safety (TypeScript strict mode)
 3. Include tests for new features

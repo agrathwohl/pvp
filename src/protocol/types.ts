@@ -64,6 +64,7 @@ export type PrimitiveType =
   | "tool.approve"
   | "tool.reject"
   | "tool.execute"
+  | "tool.output"
   | "tool.result"
   | "gate.request"
   | "gate.approve"
@@ -110,6 +111,7 @@ export type PayloadFor<T extends PrimitiveType> =
   T extends "tool.approve" ? ToolApprovePayload :
   T extends "tool.reject" ? ToolRejectPayload :
   T extends "tool.execute" ? ToolExecutePayload :
+  T extends "tool.output" ? ToolOutputPayload :
   T extends "tool.result" ? ToolResultPayload :
   T extends "gate.request" ? GateRequestPayload :
   T extends "gate.approve" ? GateApprovePayload :
@@ -425,6 +427,13 @@ export type ToolRejectPayload = {
 export type ToolExecutePayload = {
   tool_proposal: MessageId;
   approved_by: ParticipantId[];
+};
+
+export type ToolOutputPayload = {
+  tool_proposal: MessageId;
+  stream: "stdout" | "stderr";
+  text: string;
+  complete: boolean;
 };
 
 export type ToolResultPayload = {
