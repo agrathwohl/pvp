@@ -6,7 +6,7 @@
     "build": "tsc",
     "server": "tsx src/server/index.ts",
     "tui": "tsx src/tui/index.ts",
-    "agent": "tsx src/agent/index.ts",
+    "agent": "bun run src/agent/index.ts",
     "dev": "tsx watch src/server/index.ts",
     "test": "vitest"
   },
