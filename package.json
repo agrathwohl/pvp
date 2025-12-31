@@ -1,0 +1,37 @@
+{
+  "name": "pvp",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "server": "tsx src/server/index.ts",
+    "tui": "tsx src/tui/index.ts",
+    "agent": "tsx src/agent/index.ts",
+    "dev": "tsx watch src/server/index.ts",
+    "test": "vitest"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1",
+    "better-sqlite3": "^9.4.3",
+    "commander": "^12.0.0",
+    "ink": "^4.4.1",
+    "ink-text-input": "^5.0.1",
+    "pino": "^8.19.0",
+    "pino-pretty": "^10.3.1",
+    "react": "^18.2.0",
+    "t140llm": "github:agrathwohl/t140llm",
+    "ulid": "^2.3.0",
+    "ws": "^8.16.0",
+    "zod": "^3.22.4",
+    "zustand": "^4.5.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.9",
+    "@types/node": "^20.11.0",
+    "@types/react": "^18.2.0",
+    "@types/ws": "^8.5.10",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3",
+    "vitest": "^1.2.0"
+  }
+}
