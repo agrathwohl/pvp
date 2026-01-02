@@ -122,6 +122,9 @@ export class Session {
     }
 
     this.state.messageLog.push(message);
+
+    // TODO(persistence): When implementing Option 3, persist message to SQLiteStorage here:
+    // this.storage.storeMessage(this.state.id, message);
     logger.debug(
       {
         sessionId: this.state.id,

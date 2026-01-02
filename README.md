@@ -32,9 +32,32 @@ PVP is NOT a chatbot. It's a coordination layer where multiple humans and AI age
 # Install dependencies
 npm install
 
+# Install Bun (required for agent component)
+curl -fsSL https://bun.sh/install | bash
+
 # Build the project
 npm run build
 ```
+
+## Runtime Requirements
+
+This project uses different runtimes per component for optimal performance and security:
+
+| Component | Runtime | Command | Notes |
+|-----------|---------|---------|-------|
+| **Server** | Node.js | `npm run server` | WebSocket server, session management |
+| **TUI** | Node.js | `npm run tui` | Terminal user interface client |
+| **Agent** | Bun | `npm run agent` | Claude AI agent with shell execution |
+
+### Why Bun for Agent?
+
+The agent component requires Bun runtime because its shell executor (`src/agent/tools/shell-executor.ts`) uses `Bun.spawn` for secure command execution:
+
+- **Security**: Array-based arguments prevent shell injection attacks
+- **Performance**: Native subprocess streaming without external dependencies
+- **Safety**: Built-in timeout and buffer limits
+
+**Important**: Do NOT run the agent with `tsx` or Node.js. It will fail with module not found errors. Always use `npm run agent`.
 
 ## Quick Start
 
@@ -55,6 +78,31 @@ npm run tui -- --server ws://localhost:3000 --name "Alice" --role driver
 # Join an existing session
 npm run tui -- --server ws://localhost:3000 --session <session-id> --name "Bob" --role navigator
 ```
+
+### 3. Connect AI Agent (Optional)
+
+```bash
+# Join an existing session with Claude AI agent
+npm run agent -- --server ws://localhost:3000 --session <session-id>
+
+# With custom settings
+npm run agent -- \
+  --server ws://localhost:3000 \
+  --session <session-id> \
+  --name "Claude" \
+  --model claude-sonnet-4-5-20250929 \
+  --api-key sk-ant-...
+
+# Note: Requires ANTHROPIC_API_KEY environment variable or --api-key flag
+# Get your API key at: https://console.anthropic.com/
+```
+
+**Agent Capabilities**:
+- Native Anthropic tool use API for shell command execution
+- Command safety categorization (safe/low/medium/high/critical)
+- Approval gates for risky operations
+- Real-time streaming output
+- Multi-turn conversation with tool results
 
 ## Architecture
 

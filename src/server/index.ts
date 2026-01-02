@@ -25,14 +25,20 @@ class PVPServer {
     this.router = new MessageRouter();
 
     this.transportServer.onConnection((transport) => {
-      logger.info({ participantId: transport.participantId }, "Client connected");
+      logger.info(
+        { participantId: transport.participantId },
+        "Client connected",
+      );
 
       transport.onMessage(async (message) => {
         await this.handleMessage(transport.participantId, message);
       });
 
       transport.onClose(() => {
-        logger.info({ participantId: transport.participantId }, "Client disconnected");
+        logger.info(
+          { participantId: transport.participantId },
+          "Client disconnected",
+        );
         this.handleDisconnect(transport.participantId);
       });
     });
@@ -42,7 +48,7 @@ class PVPServer {
 
   private async handleMessage(
     participantId: ParticipantId,
-    message: AnyMessage
+    message: AnyMessage,
   ): Promise<void> {
     try {
       // Handle session creation
@@ -81,7 +87,10 @@ class PVPServer {
         this.startHeartbeatMonitoring(session, participantId);
       }
     } catch (error) {
-      logger.error({ error, participantId, messageType: message.type }, "Error handling message");
+      logger.error(
+        { error, participantId, messageType: message.type },
+        "Error handling message",
+      );
 
       const errorMsg = createMessage("error", message.session, "system", {
         code: "INTERNAL_ERROR",
@@ -96,7 +105,7 @@ class PVPServer {
 
   private async handleSessionCreate(
     participantId: ParticipantId,
-    message: AnyMessage
+    message: AnyMessage,
   ): Promise<void> {
     if (message.type !== "session.create") return;
 
@@ -134,7 +143,7 @@ class PVPServer {
           participantId,
           {
             reason: "Client disconnected",
-          }
+          },
         );
         this.transportServer.broadcast(leaveMsg);
 
@@ -147,7 +156,7 @@ class PVPServer {
             participant: participantId,
             status: "disconnected",
             last_active: new Date().toISOString(),
-          }
+          },
         );
 
         this.transportServer.broadcast(presenceMsg);
@@ -157,7 +166,7 @@ class PVPServer {
 
   private startHeartbeatMonitoring(
     session: Session,
-    participantId: ParticipantId
+    participantId: ParticipantId,
   ): void {
     const config = session.getConfig();
 
@@ -180,7 +189,7 @@ class PVPServer {
         "heartbeat.ping",
         session.getId(),
         "system",
-        {}
+        {},
       );
 
       this.transportServer.broadcast(pingMsg, (id) => id === participantId);
@@ -188,7 +197,8 @@ class PVPServer {
       // Check last heartbeat for idle/away status
       const lastHeartbeat = new Date(participant.lastHeartbeat);
       const now = new Date();
-      const secondsSinceHeartbeat = (now.getTime() - lastHeartbeat.getTime()) / 1000;
+      const secondsSinceHeartbeat =
+        (now.getTime() - lastHeartbeat.getTime()) / 1000;
 
       if (secondsSinceHeartbeat > config.away_timeout_seconds) {
         if (participant.presence !== "away") {
@@ -201,7 +211,7 @@ class PVPServer {
               participant: participantId,
               status: "away",
               last_active: participant.lastActive,
-            }
+            },
           );
           this.transportServer.broadcast(presenceMsg);
         }
@@ -216,7 +226,7 @@ class PVPServer {
               participant: participantId,
               status: "idle",
               last_active: participant.lastActive,
-            }
+            },
           );
           this.transportServer.broadcast(presenceMsg);
         }

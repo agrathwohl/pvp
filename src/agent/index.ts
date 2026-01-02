@@ -1,4 +1,40 @@
 #!/usr/bin/env node
+
+/**
+ * RUNTIME REQUIREMENT: This agent requires Bun runtime due to shell execution
+ * dependencies in tools/shell-executor.ts which uses Bun.spawn for security.
+ *
+ * DO NOT convert to Node.js/tsx without replacing Bun.spawn implementation.
+ *
+ * Run with: npm run agent -- [options]
+ * Do NOT use: tsx src/agent/index.ts
+ */
+
+// Runtime validation
+if (typeof Bun === 'undefined') {
+  console.error(`
+❌ ERROR: This agent requires Bun runtime.
+
+Current runtime: Node.js
+Required runtime: Bun
+
+Why Bun?
+  The agent's shell executor uses Bun.spawn for secure command execution:
+  - Array-based arguments prevent shell injection attacks
+  - Native subprocess streaming without external dependencies
+  - Built-in timeout and buffer limits
+
+Installation:
+  curl -fsSL https://bun.sh/install | bash
+
+Then run:
+  npm run agent -- --server <url> --session <id>
+
+Do NOT use: tsx src/agent/index.ts
+`);
+  process.exit(1);
+}
+
 import { Command } from "commander";
 import { ClaudeAgent } from "./claude-agent.js";
 import { logger } from "../utils/logger.js";

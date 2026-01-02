@@ -144,6 +144,13 @@ export class MessageRouter {
       broadcast(existingAnnouncement, (id) => id === participant.id);
     }
 
+    // Send message history to the new joiner
+    // TODO(persistence): When implementing Option 3, load history from SQLiteStorage here
+    const messageHistory = session.getMessages();
+    for (const msg of messageHistory) {
+      broadcast(msg, (id) => id === participant.id);
+    }
+
     // Broadcast new participant announcement to everyone
     const announcement = createMessage(
       "participant.announce",
