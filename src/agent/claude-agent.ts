@@ -7,6 +7,7 @@ import { ulid } from "../utils/ulid.js";
 import { logger } from "../utils/logger.js";
 import { createShellToolHandler } from "./tools/shell-tool.js";
 import { categorizeCommand } from "./tools/shell-executor.js";
+import { MCPManager, type MCPServerConfig, type MCPToolDefinition } from "./mcp/index.js";
 import type {
   AnyMessage,
   ParticipantId,
@@ -36,6 +37,14 @@ export class ClaudeAgent {
   private toolUseIdToProposalId: Map<MessageId, string> = new Map();
   private currentPromptRef: MessageId | null = null;
 
+  // MCP support
+  private mcpManager: MCPManager;
+  private mcpToolProposals: Map<MessageId, {
+    tool: MCPToolDefinition;
+    args: Record<string, unknown>;
+    toolUseId: string;
+  }> = new Map();
+
   constructor(config: ClaudeAgentConfig) {
     this.participantId = ulid();
     this.agentName = config.agentName || "Claude Assistant";
@@ -52,10 +61,27 @@ export class ClaudeAgent {
     // Initialize shell tool handler
     this.shellToolHandler = createShellToolHandler();
 
+    // Initialize MCP manager
+    this.mcpManager = new MCPManager();
+
     this.setupEventHandlers();
 
     if (config.sessionId) {
       this.sessionId = config.sessionId;
+    }
+  }
+
+  /**
+   * Initialize MCP servers from configuration
+   */
+  async initializeMCP(configs: MCPServerConfig[]): Promise<void> {
+    for (const config of configs) {
+      try {
+        await this.mcpManager.addServer(config);
+        logger.info({ server: config.name }, "MCP server initialized");
+      } catch (error) {
+        logger.error({ error, server: config.name }, "Failed to initialize MCP server");
+      }
     }
   }
 
@@ -80,10 +106,6 @@ export class ClaudeAgent {
 
   async connect(): Promise<void> {
     this.client.connect();
-  }
-
-  async disconnect(): Promise<void> {
-    this.client.close();
   }
 
   private async joinSession(sessionId: SessionId): Promise<void> {
@@ -182,7 +204,7 @@ export class ClaudeAgent {
         model: this.model,
         max_tokens: 4096,
         messages: this.conversationHistory,
-        tools: [this.getShellTool()]
+        tools: this.getAllTools()
       });
 
       // Handle response content
@@ -212,14 +234,16 @@ export class ClaudeAgent {
         content: response.content
       });
 
-      // Propose shell commands that Claude wants to execute
+      // Propose tools that Claude wants to execute
       for (const toolUse of toolUses) {
         if (toolUse.name === "execute_shell_command") {
           const input = toolUse.input as { command: string };
           logger.info({ command: input.command, toolUseId: toolUse.id }, "Claude requested shell command execution");
-          
-          // Propose the command through PVP protocol
           await this.proposeShellCommand(input.command, toolUse.id);
+        } else if (this.mcpManager.isMCPTool(toolUse.name)) {
+          // Route to MCP tool
+          logger.info({ tool: toolUse.name, toolUseId: toolUse.id }, "Claude requested MCP tool execution");
+          await this.proposeMCPTool(toolUse.name, toolUse.input as Record<string, unknown>, toolUse.id);
         }
       }
 
@@ -266,7 +290,14 @@ export class ClaudeAgent {
 
     const { tool_proposal, approved_by } = message.payload;
 
-    // Retrieve the tool proposal
+    // Check if this is an MCP tool proposal
+    if (this.mcpToolProposals.has(tool_proposal)) {
+      logger.info({ toolProposal: tool_proposal, approvers: approved_by }, "Executing approved MCP tool");
+      await this.executeMCPTool(tool_proposal);
+      return;
+    }
+
+    // Retrieve the shell tool proposal
     const proposal = this.toolProposals.get(tool_proposal);
     if (!proposal) {
       logger.warn({ toolProposal: tool_proposal }, "Tool proposal not found");
@@ -416,7 +447,7 @@ export class ClaudeAgent {
         model: this.model,
         max_tokens: 4096,
         messages: this.conversationHistory,
-        tools: [this.getShellTool()]
+        tools: this.getAllTools()
       });
 
       // Handle Claude's response to the tool result
@@ -452,6 +483,9 @@ export class ClaudeAgent {
           const input = toolUse.input as { command: string };
           logger.info({ command: input.command, toolUseId: toolUse.id }, "Claude requested additional shell command execution");
           await this.proposeShellCommand(input.command, toolUse.id);
+        } else if (this.mcpManager.isMCPTool(toolUse.name)) {
+          logger.info({ tool: toolUse.name, toolUseId: toolUse.id }, "Claude requested additional MCP tool execution");
+          await this.proposeMCPTool(toolUse.name, toolUse.input as Record<string, unknown>, toolUse.id);
         }
       }
 
@@ -491,14 +525,13 @@ export class ClaudeAgent {
   }
 
   /**
-   * Proposes a shell command for execution
-   * This would typically be called when Claude's response includes a shell command
+   * Get all available tools (shell + MCP) for Claude API
    */
-  /**
-   * Get shell tool definition for Claude API
-   */
-  private getShellTool(): Tool {
-    return {
+  private getAllTools(): Tool[] {
+    const tools: Tool[] = [];
+
+    // Add shell tool
+    tools.push({
       name: "execute_shell_command",
       description: "Execute a shell command with safety controls and approval workflows. Commands are categorized by risk (safe/low/medium/high/critical) and may require human approval.",
       input_schema: {
@@ -511,7 +544,18 @@ export class ClaudeAgent {
         },
         required: ["command"]
       }
-    };
+    });
+
+    // Add MCP tools with namespaced names
+    for (const mcpTool of this.mcpManager.getAllTools()) {
+      tools.push({
+        name: mcpTool.namespaced_name,
+        description: mcpTool.mcp_tool.description || `Tool from ${mcpTool.server_name}`,
+        input_schema: mcpTool.mcp_tool.inputSchema as Tool["input_schema"]
+      });
+    }
+
+    return tools;
   }
 
   public async proposeShellCommand(command: string, toolUseId?: string): Promise<MessageId> {
@@ -555,5 +599,147 @@ export class ClaudeAgent {
       logger.error({ error, command }, "Failed to propose shell command");
       throw error;
     }
+  }
+
+  /**
+   * Propose an MCP tool for execution through the PVP gate system
+   */
+  public async proposeMCPTool(
+    namespacedName: string,
+    args: Record<string, unknown>,
+    toolUseId: string
+  ): Promise<MessageId> {
+    if (!this.sessionId) {
+      throw new Error("Not connected to a session");
+    }
+
+    const mcpTool = this.mcpManager.getTool(namespacedName);
+    if (!mcpTool) {
+      throw new Error(`MCP tool not found: ${namespacedName}`);
+    }
+
+    // Create tool proposal message
+    const proposalMsg = createMessage(
+      "tool.propose",
+      this.sessionId,
+      this.participantId,
+      {
+        tool_name: namespacedName,
+        arguments: args,
+        agent: this.participantId,
+        category: mcpTool.category,
+        risk_level: mcpTool.risk_level,
+        description: mcpTool.mcp_tool.description || `MCP tool from ${mcpTool.server_name}`,
+        requires_approval: mcpTool.requires_approval,
+      }
+    );
+
+    // Store the proposal for later execution
+    this.mcpToolProposals.set(proposalMsg.id, {
+      tool: mcpTool,
+      args,
+      toolUseId,
+    });
+
+    // Track Claude's tool use ID
+    this.toolUseIdToProposalId.set(proposalMsg.id, toolUseId);
+
+    // Send the proposal
+    this.client.send(proposalMsg);
+
+    logger.info({
+      proposalId: proposalMsg.id,
+      toolUseId,
+      tool: namespacedName,
+      category: mcpTool.category,
+      riskLevel: mcpTool.risk_level,
+      requiresApproval: mcpTool.requires_approval,
+    }, "Proposed MCP tool");
+
+    return proposalMsg.id;
+  }
+
+  /**
+   * Execute an approved MCP tool
+   */
+  private async executeMCPTool(proposalId: MessageId): Promise<void> {
+    if (!this.sessionId) return;
+
+    const proposal = this.mcpToolProposals.get(proposalId);
+    if (!proposal) {
+      logger.warn({ proposalId }, "MCP tool proposal not found");
+      return;
+    }
+
+    const { tool, args, toolUseId } = proposal;
+
+    logger.info({
+      proposalId,
+      tool: tool.namespaced_name,
+      server: tool.server_name,
+    }, "Executing approved MCP tool");
+
+    const startTime = Date.now();
+
+    try {
+      // Execute via MCP manager
+      const result = await this.mcpManager.callTool(tool.namespaced_name, args);
+      const duration_ms = Date.now() - startTime;
+
+      // Send tool result message through PVP
+      const resultMsg = createMessage(
+        "tool.result",
+        this.sessionId,
+        this.participantId,
+        {
+          tool_proposal: proposalId,
+          success: result.success,
+          result: result.content,
+          error: result.error,
+          duration_ms,
+        }
+      );
+      this.client.send(resultMsg);
+
+      // Clean up
+      this.mcpToolProposals.delete(proposalId);
+
+      // Send result back to Claude
+      await this.sendToolResultToClaude(proposalId, {
+        success: result.success,
+        output: JSON.stringify(result.content, null, 2),
+        error: result.error,
+      });
+    } catch (error) {
+      const duration_ms = Date.now() - startTime;
+      logger.error({ error, proposalId, tool: tool.namespaced_name }, "MCP tool execution failed");
+
+      // Send error result
+      const errorMsg = createMessage(
+        "tool.result",
+        this.sessionId,
+        this.participantId,
+        {
+          tool_proposal: proposalId,
+          success: false,
+          error: error instanceof Error ? error.message : "Unknown error",
+          duration_ms,
+        }
+      );
+      this.client.send(errorMsg);
+
+      this.mcpToolProposals.delete(proposalId);
+
+      await this.sendToolResultToClaude(proposalId, {
+        success: false,
+        output: "",
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  }
+
+  async disconnect(): Promise<void> {
+    await this.mcpManager.shutdown();
+    this.client.close();
   }
 }

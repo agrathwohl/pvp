@@ -36,8 +36,10 @@ Do NOT use: tsx src/agent/index.ts
 }
 
 import { Command } from "commander";
+import { readFileSync } from "fs";
 import { ClaudeAgent } from "./claude-agent.js";
 import { logger } from "../utils/logger.js";
+import { loadMCPConfig, validateMCPConfig } from "../config/mcp-config.js";
 
 const program = new Command();
 
@@ -49,8 +51,9 @@ program
   .option("-n, --name <name>", "Agent display name", "Claude Assistant")
   .option("-m, --model <model>", "Claude model to use", "claude-sonnet-4-5-20250929")
   .option("-k, --api-key <key>", "Anthropic API key (or set ANTHROPIC_API_KEY env var)")
+  .option("--mcp-config <file>", "Path to MCP servers configuration file (JSON)")
   .action(async (options) => {
-    const { server, session, name, model, apiKey } = options;
+    const { server, session, name, model, apiKey, mcpConfig } = options;
 
     // Validate API key
     const finalApiKey = apiKey || process.env.ANTHROPIC_API_KEY;
@@ -77,6 +80,32 @@ program
         model,
         apiKey: finalApiKey,
       });
+
+      // Initialize MCP servers if config provided
+      if (mcpConfig) {
+        console.log(`📦 Loading MCP configuration from: ${mcpConfig}`);
+        try {
+          const rawConfig = JSON.parse(readFileSync(mcpConfig, "utf-8"));
+          const validation = validateMCPConfig(rawConfig);
+
+          if (!validation.valid) {
+            console.error("❌ Invalid MCP configuration:");
+            validation.errors?.issues.forEach(issue => {
+              console.error(`   - ${issue.path.join(".")}: ${issue.message}`);
+            });
+            process.exit(1);
+          }
+
+          const mcpConfigs = loadMCPConfig(rawConfig);
+          console.log(`   Found ${mcpConfigs.length} MCP server(s)`);
+
+          await agent.initializeMCP(mcpConfigs);
+          console.log("✅ MCP servers initialized");
+        } catch (error) {
+          console.error("❌ Failed to load MCP configuration:", error instanceof Error ? error.message : error);
+          process.exit(1);
+        }
+      }
 
       // Handle shutdown
       process.on("SIGINT", async () => {
