@@ -187,6 +187,32 @@ export class ClaudeAgent {
 
     const { content } = message.payload;
 
+    // CRITICAL: Block new prompts while tools are pending
+    // The Anthropic API requires all tool_use blocks to have tool_result blocks
+    // in the next message. If we process a new prompt while tools are pending,
+    // the conversation history will be corrupted.
+    if (this.pendingToolBatch && this.pendingToolBatch.tools.size > 0) {
+      const pendingCount = Array.from(this.pendingToolBatch.tools.values())
+        .filter(t => t.status === 'pending').length;
+
+      if (pendingCount > 0) {
+        logger.warn({
+          pendingTools: pendingCount,
+          prompt: content.slice(0, 50),
+        }, "Rejecting prompt - tools pending approval");
+
+        // Send error back to user
+        const errorMsg = createMessage("error", this.sessionId, this.participantId, {
+          code: "INVALID_STATE",
+          message: `Cannot process new prompt - ${pendingCount} tool(s) awaiting approval. Please approve or reject pending gates first.`,
+          recoverable: true,
+          related_to: message.id,
+        });
+        this.client.send(errorMsg);
+        return;
+      }
+    }
+
     logger.info(`[${this.agentName}] Processing prompt: ${content.slice(0, 100)}...`);
 
     // Store prompt ref for tool result responses
@@ -261,36 +287,8 @@ export class ClaudeAgent {
 
       // Create batch for tool_use blocks - Anthropic requires ALL tool_results together
       if (toolUses.length > 0) {
-        this.pendingToolBatch = {
-          promptRef: message.id,
-          tools: new Map(),
-        };
-
-        // Initialize batch entries for all tool_use blocks
-        for (const toolUse of toolUses) {
-          this.pendingToolBatch.tools.set(toolUse.id, {
-            toolUseId: toolUse.id,
-            toolName: toolUse.name,
-            proposalId: null,
-            status: 'pending',
-            result: null,
-          });
-        }
-
-        logger.info({ batchSize: toolUses.length }, "Created tool batch for parallel tool_use blocks");
-
-        // Now propose each tool (gates will be created for each)
-        for (const toolUse of toolUses) {
-          if (toolUse.name === "execute_shell_command") {
-            const input = toolUse.input as { command: string };
-            logger.info({ command: input.command, toolUseId: toolUse.id }, "Claude requested shell command execution");
-            await this.proposeShellCommand(input.command, toolUse.id);
-          } else if (this.mcpManager.isMCPTool(toolUse.name)) {
-            // Route to MCP tool
-            logger.info({ tool: toolUse.name, toolUseId: toolUse.id }, "Claude requested MCP tool execution");
-            await this.proposeMCPTool(toolUse.name, toolUse.input as Record<string, unknown>, toolUse.id);
-          }
-        }
+        this.createToolBatch(message.id, toolUses);
+        await this.proposeToolBatch(toolUses);
       }
 
       // Send thinking end
@@ -318,6 +316,13 @@ export class ClaudeAgent {
       logger.info(`[${this.agentName}] Response sent (${fullResponse.length} chars, ${toolUses.length} tools)`);
     } catch (error) {
       logger.error({ error }, "Error in tool-enabled response");
+
+      // Check if this is a tool_result missing error - if so, try to recover
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      if (errorMessage.includes("tool_use") && errorMessage.includes("tool_result")) {
+        logger.warn("Detected corrupted conversation history - attempting recovery");
+        this.recoverFromCorruptedHistory();
+      }
 
       // Send error message
       const errorMsg = createMessage("error", this.sessionId, this.participantId, {
@@ -573,36 +578,10 @@ export class ClaudeAgent {
         content: response.content
       });
 
-      // Create batch for follow-up tool requests (same pattern as checkAndSendBatchResults)
+      // Create batch for follow-up tool requests
       if (toolUses.length > 0) {
-        this.pendingToolBatch = {
-          promptRef: this.currentPromptRef || proposalId,
-          tools: new Map(),
-        };
-
-        for (const toolUse of toolUses) {
-          this.pendingToolBatch.tools.set(toolUse.id, {
-            toolUseId: toolUse.id,
-            toolName: toolUse.name,
-            proposalId: null,
-            status: 'pending',
-            result: null,
-          });
-        }
-
-        logger.info({ batchSize: toolUses.length }, "Created tool batch for follow-up tool requests (fallback path)");
-
-        // Propose each tool
-        for (const toolUse of toolUses) {
-          if (toolUse.name === "execute_shell_command") {
-            const input = toolUse.input as { command: string };
-            logger.info({ command: input.command, toolUseId: toolUse.id }, "Claude requested additional shell command execution");
-            await this.proposeShellCommand(input.command, toolUse.id);
-          } else if (this.mcpManager.isMCPTool(toolUse.name)) {
-            logger.info({ tool: toolUse.name, toolUseId: toolUse.id }, "Claude requested additional MCP tool execution");
-            await this.proposeMCPTool(toolUse.name, toolUse.input as Record<string, unknown>, toolUse.id);
-          }
-        }
+        this.createToolBatch(this.currentPromptRef || proposalId, toolUses);
+        await this.proposeToolBatch(toolUses);
       }
 
       // Send thinking end
@@ -630,6 +609,13 @@ export class ClaudeAgent {
       logger.info(`[${this.agentName}] Sent tool result to Claude and received response (${fullResponse.length} chars, ${toolUses.length} additional tools)`);
     } catch (error) {
       logger.error({ error, proposalId, toolUseId }, "Error sending tool result to Claude");
+
+      // Check if this is a tool_result missing error - if so, try to recover
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      if (errorMessage.includes("tool_use") && errorMessage.includes("tool_result")) {
+        logger.warn("Detected corrupted conversation history in fallback path - attempting recovery");
+        this.recoverFromCorruptedHistory();
+      }
 
       const errorMsg = createMessage("error", this.sessionId, this.participantId, {
         code: "AGENT_ERROR",
@@ -1025,32 +1011,8 @@ export class ClaudeAgent {
 
       // Create new batch if Claude requests more tools
       if (toolUses.length > 0) {
-        this.pendingToolBatch = {
-          promptRef,
-          tools: new Map(),
-        };
-
-        for (const toolUse of toolUses) {
-          this.pendingToolBatch.tools.set(toolUse.id, {
-            toolUseId: toolUse.id,
-            toolName: toolUse.name,
-            proposalId: null,
-            status: 'pending',
-            result: null,
-          });
-        }
-
-        logger.info({ batchSize: toolUses.length }, "Created new tool batch for follow-up tool requests");
-
-        // Propose each tool
-        for (const toolUse of toolUses) {
-          if (toolUse.name === "execute_shell_command") {
-            const input = toolUse.input as { command: string };
-            await this.proposeShellCommand(input.command, toolUse.id);
-          } else if (this.mcpManager.isMCPTool(toolUse.name)) {
-            await this.proposeMCPTool(toolUse.name, toolUse.input as Record<string, unknown>, toolUse.id);
-          }
-        }
+        this.createToolBatch(promptRef, toolUses);
+        await this.proposeToolBatch(toolUses);
       }
 
       // Send thinking end
@@ -1079,6 +1041,13 @@ export class ClaudeAgent {
     } catch (error) {
       logger.error({ error, toolResultCount: toolResults.length }, "Error sending batch results to Claude");
 
+      // Check if this is a tool_result missing error - if so, try to recover
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      if (errorMessage.includes("tool_use") && errorMessage.includes("tool_result")) {
+        logger.warn("Detected corrupted conversation history in batch send - attempting recovery");
+        this.recoverFromCorruptedHistory();
+      }
+
       const errorMsg = createMessage("error", this.sessionId, this.participantId, {
         code: "AGENT_ERROR",
         message: error instanceof Error ? error.message : "Unknown error",
@@ -1086,6 +1055,80 @@ export class ClaudeAgent {
       });
       this.client.send(errorMsg);
     }
+  }
+
+  /**
+   * Create a new tool batch for tracking parallel tool_use blocks
+   */
+  private createToolBatch(promptRef: MessageId, toolUses: ToolUseBlock[]): void {
+    this.pendingToolBatch = {
+      promptRef,
+      tools: new Map(),
+    };
+
+    for (const toolUse of toolUses) {
+      this.pendingToolBatch.tools.set(toolUse.id, {
+        toolUseId: toolUse.id,
+        toolName: toolUse.name,
+        proposalId: null,
+        status: 'pending',
+        result: null,
+      });
+    }
+
+    logger.info({ batchSize: toolUses.length, promptRef }, "Created tool batch");
+  }
+
+  /**
+   * Propose all tools in a batch
+   */
+  private async proposeToolBatch(toolUses: ToolUseBlock[]): Promise<void> {
+    for (const toolUse of toolUses) {
+      if (toolUse.name === "execute_shell_command") {
+        const input = toolUse.input as { command: string };
+        logger.info({ command: input.command, toolUseId: toolUse.id }, "Claude requested shell command execution");
+        await this.proposeShellCommand(input.command, toolUse.id);
+      } else if (this.mcpManager.isMCPTool(toolUse.name)) {
+        logger.info({ tool: toolUse.name, toolUseId: toolUse.id }, "Claude requested MCP tool execution");
+        await this.proposeMCPTool(toolUse.name, toolUse.input as Record<string, unknown>, toolUse.id);
+      }
+    }
+  }
+
+  /**
+   * Recover from corrupted conversation history caused by missing tool_result blocks.
+   * This removes the last assistant message if it contains tool_use blocks without
+   * corresponding tool_result, and clears any pending tool batches.
+   */
+  private recoverFromCorruptedHistory(): void {
+    // Clear pending tool batch
+    if (this.pendingToolBatch) {
+      logger.info({ batchSize: this.pendingToolBatch.tools.size }, "Clearing pending tool batch during recovery");
+      this.pendingToolBatch = null;
+    }
+
+    // Clear pending proposals
+    this.toolProposals.clear();
+    this.mcpToolProposals.clear();
+    this.toolUseIdToProposalId.clear();
+
+    // Find and remove the last assistant message if it contains tool_use
+    for (let i = this.conversationHistory.length - 1; i >= 0; i--) {
+      const msg = this.conversationHistory[i];
+      if (msg.role === "assistant" && Array.isArray(msg.content)) {
+        const hasToolUse = msg.content.some(
+          (block: { type: string }) => block.type === "tool_use"
+        );
+        if (hasToolUse) {
+          logger.info({ index: i }, "Removing corrupted assistant message with tool_use");
+          // Remove this message and everything after it
+          this.conversationHistory = this.conversationHistory.slice(0, i);
+          break;
+        }
+      }
+    }
+
+    logger.info({ historyLength: this.conversationHistory.length }, "Conversation history recovered");
   }
 
   async disconnect(): Promise<void> {
