@@ -71,7 +71,9 @@ export interface TUIState {
   updateDraft: (content: string) => void;
   submitPrompt: (targetAgent: ParticipantId) => void;
   approveGate: (gateId: MessageId, comment?: string) => void;
+  approveAllGates: (comment?: string) => void;
   rejectGate: (gateId: MessageId, reason: string) => void;
+  rejectAllGates: (reason: string) => void;
   raiseInterrupt: (urgency: InterruptUrgency, message: string, targetAgent?: ParticipantId) => void;
   toggleThinking: () => void;
   setError: (error: string | null) => void;
@@ -444,6 +446,21 @@ export const useTUIStore = create<TUIState>((set, get) => ({
     sendMessage(message);
   },
 
+  approveAllGates: (comment) => {
+    const { sessionId, participantId, sendMessage, pendingGates } = get();
+    if (!sessionId || !participantId) return;
+
+    // Approve all pending gates
+    for (const [gateId] of pendingGates) {
+      const message = createMessage("gate.approve", sessionId, participantId, {
+        gate: gateId,
+        approver: participantId,
+        comment,
+      });
+      sendMessage(message);
+    }
+  },
+
   rejectGate: (gateId, reason) => {
     const { sessionId, participantId, sendMessage } = get();
     if (!sessionId || !participantId) return;
@@ -455,6 +472,21 @@ export const useTUIStore = create<TUIState>((set, get) => ({
     });
 
     sendMessage(message);
+  },
+
+  rejectAllGates: (reason) => {
+    const { sessionId, participantId, sendMessage, pendingGates } = get();
+    if (!sessionId || !participantId) return;
+
+    // Reject all pending gates
+    for (const [gateId] of pendingGates) {
+      const message = createMessage("gate.reject", sessionId, participantId, {
+        gate: gateId,
+        rejector: participantId,
+        reason,
+      });
+      sendMessage(message);
+    }
   },
 
   raiseInterrupt: (urgency, message, targetAgent) => {

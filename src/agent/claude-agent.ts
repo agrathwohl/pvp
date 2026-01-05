@@ -45,6 +45,19 @@ export class ClaudeAgent {
     toolUseId: string;
   }> = new Map();
 
+  // Tool batching - Anthropic API requires ALL tool_use blocks to have
+  // corresponding tool_result blocks in the next message
+  private pendingToolBatch: {
+    promptRef: MessageId;
+    tools: Map<string, {  // keyed by toolUseId
+      toolUseId: string;
+      toolName: string;
+      proposalId: MessageId | null;
+      status: 'pending' | 'resolved';
+      result: { success: boolean; output: string; error?: string } | null;
+    }>;
+  } | null = null;
+
   constructor(config: ClaudeAgentConfig) {
     this.participantId = ulid();
     this.agentName = config.agentName || "Claude Assistant";
@@ -246,16 +259,37 @@ export class ClaudeAgent {
         content: response.content
       });
 
-      // Propose tools that Claude wants to execute
-      for (const toolUse of toolUses) {
-        if (toolUse.name === "execute_shell_command") {
-          const input = toolUse.input as { command: string };
-          logger.info({ command: input.command, toolUseId: toolUse.id }, "Claude requested shell command execution");
-          await this.proposeShellCommand(input.command, toolUse.id);
-        } else if (this.mcpManager.isMCPTool(toolUse.name)) {
-          // Route to MCP tool
-          logger.info({ tool: toolUse.name, toolUseId: toolUse.id }, "Claude requested MCP tool execution");
-          await this.proposeMCPTool(toolUse.name, toolUse.input as Record<string, unknown>, toolUse.id);
+      // Create batch for tool_use blocks - Anthropic requires ALL tool_results together
+      if (toolUses.length > 0) {
+        this.pendingToolBatch = {
+          promptRef: message.id,
+          tools: new Map(),
+        };
+
+        // Initialize batch entries for all tool_use blocks
+        for (const toolUse of toolUses) {
+          this.pendingToolBatch.tools.set(toolUse.id, {
+            toolUseId: toolUse.id,
+            toolName: toolUse.name,
+            proposalId: null,
+            status: 'pending',
+            result: null,
+          });
+        }
+
+        logger.info({ batchSize: toolUses.length }, "Created tool batch for parallel tool_use blocks");
+
+        // Now propose each tool (gates will be created for each)
+        for (const toolUse of toolUses) {
+          if (toolUse.name === "execute_shell_command") {
+            const input = toolUse.input as { command: string };
+            logger.info({ command: input.command, toolUseId: toolUse.id }, "Claude requested shell command execution");
+            await this.proposeShellCommand(input.command, toolUse.id);
+          } else if (this.mcpManager.isMCPTool(toolUse.name)) {
+            // Route to MCP tool
+            logger.info({ tool: toolUse.name, toolUseId: toolUse.id }, "Claude requested MCP tool execution");
+            await this.proposeMCPTool(toolUse.name, toolUse.input as Record<string, unknown>, toolUse.id);
+          }
         }
       }
 
@@ -364,9 +398,9 @@ export class ClaudeAgent {
     // Clean up
     this.toolProposals.delete(tool_proposal);
 
-    // CRITICAL: Send tool result back to Claude to continue conversation
+    // Update batch with result (don't send to Claude yet - wait for all tools)
     if (toolResult) {
-      await this.sendToolResultToClaude(tool_proposal, toolResult);
+      this.updateBatchResult(tool_proposal, toolResult);
     }
   }
 
@@ -416,11 +450,11 @@ export class ClaudeAgent {
     // Check if this is a shell tool proposal
     const shellProposal = this.toolProposals.get(proposalId);
     if (shellProposal) {
-      // Clean up proposal tracking (sendToolResultToClaude handles toolUseIdToProposalId)
+      // Clean up proposal tracking
       this.toolProposals.delete(proposalId);
 
-      // Send error result to Claude
-      await this.sendToolResultToClaude(proposalId, {
+      // Update batch with rejection error (don't send to Claude yet - wait for all tools)
+      this.updateBatchResult(proposalId, {
         success: false,
         output: "",
         error: `Command rejected by human: ${reason}`,
@@ -431,11 +465,11 @@ export class ClaudeAgent {
     // Check if this is an MCP tool proposal
     const mcpProposal = this.mcpToolProposals.get(proposalId);
     if (mcpProposal) {
-      // Clean up proposal tracking (sendToolResultToClaude handles toolUseIdToProposalId)
+      // Clean up proposal tracking
       this.mcpToolProposals.delete(proposalId);
 
-      // Send error result to Claude
-      await this.sendToolResultToClaude(proposalId, {
+      // Update batch with rejection error
+      this.updateBatchResult(proposalId, {
         success: false,
         output: "",
         error: `Tool "${mcpProposal.tool.mcp_tool.name}" rejected by human: ${reason}`,
@@ -539,15 +573,35 @@ export class ClaudeAgent {
         content: response.content
       });
 
-      // Propose any additional tools Claude wants to use
-      for (const toolUse of toolUses) {
-        if (toolUse.name === "execute_shell_command") {
-          const input = toolUse.input as { command: string };
-          logger.info({ command: input.command, toolUseId: toolUse.id }, "Claude requested additional shell command execution");
-          await this.proposeShellCommand(input.command, toolUse.id);
-        } else if (this.mcpManager.isMCPTool(toolUse.name)) {
-          logger.info({ tool: toolUse.name, toolUseId: toolUse.id }, "Claude requested additional MCP tool execution");
-          await this.proposeMCPTool(toolUse.name, toolUse.input as Record<string, unknown>, toolUse.id);
+      // Create batch for follow-up tool requests (same pattern as checkAndSendBatchResults)
+      if (toolUses.length > 0) {
+        this.pendingToolBatch = {
+          promptRef: this.currentPromptRef || proposalId,
+          tools: new Map(),
+        };
+
+        for (const toolUse of toolUses) {
+          this.pendingToolBatch.tools.set(toolUse.id, {
+            toolUseId: toolUse.id,
+            toolName: toolUse.name,
+            proposalId: null,
+            status: 'pending',
+            result: null,
+          });
+        }
+
+        logger.info({ batchSize: toolUses.length }, "Created tool batch for follow-up tool requests (fallback path)");
+
+        // Propose each tool
+        for (const toolUse of toolUses) {
+          if (toolUse.name === "execute_shell_command") {
+            const input = toolUse.input as { command: string };
+            logger.info({ command: input.command, toolUseId: toolUse.id }, "Claude requested additional shell command execution");
+            await this.proposeShellCommand(input.command, toolUse.id);
+          } else if (this.mcpManager.isMCPTool(toolUse.name)) {
+            logger.info({ tool: toolUse.name, toolUseId: toolUse.id }, "Claude requested additional MCP tool execution");
+            await this.proposeMCPTool(toolUse.name, toolUse.input as Record<string, unknown>, toolUse.id);
+          }
         }
       }
 
@@ -642,6 +696,14 @@ export class ClaudeAgent {
       // Track Claude's tool use ID if provided
       if (toolUseId) {
         this.toolUseIdToProposalId.set(proposalMsg.id, toolUseId);
+
+        // Update batch with proposal ID
+        if (this.pendingToolBatch) {
+          const batchEntry = this.pendingToolBatch.tools.get(toolUseId);
+          if (batchEntry) {
+            batchEntry.proposalId = proposalMsg.id;
+          }
+        }
       }
 
       // Send the proposal
@@ -706,6 +768,14 @@ export class ClaudeAgent {
     // Track Claude's tool use ID
     this.toolUseIdToProposalId.set(proposalMsg.id, toolUseId);
 
+    // Update batch with proposal ID
+    if (this.pendingToolBatch) {
+      const batchEntry = this.pendingToolBatch.tools.get(toolUseId);
+      if (batchEntry) {
+        batchEntry.proposalId = proposalMsg.id;
+      }
+    }
+
     // Send the proposal
     this.client.send(proposalMsg);
 
@@ -766,8 +836,8 @@ export class ClaudeAgent {
       // Clean up
       this.mcpToolProposals.delete(proposalId);
 
-      // Send result back to Claude
-      await this.sendToolResultToClaude(proposalId, {
+      // Update batch with result (don't send to Claude yet - wait for all tools)
+      this.updateBatchResult(proposalId, {
         success: result.success,
         output: JSON.stringify(result.content, null, 2),
         error: result.error,
@@ -792,11 +862,229 @@ export class ClaudeAgent {
 
       this.mcpToolProposals.delete(proposalId);
 
-      await this.sendToolResultToClaude(proposalId, {
+      // Update batch with error result
+      this.updateBatchResult(proposalId, {
         success: false,
         output: "",
         error: error instanceof Error ? error.message : "Unknown error",
       });
+    }
+  }
+
+  /**
+   * Update a tool's result in the pending batch and check if batch is complete
+   */
+  private updateBatchResult(
+    proposalId: MessageId,
+    result: { success: boolean; output: string; error?: string }
+  ): void {
+    if (!this.pendingToolBatch) {
+      logger.warn({ proposalId }, "No pending tool batch, falling back to immediate send");
+      this.sendToolResultToClaude(proposalId, result);
+      return;
+    }
+
+    // Find the batch entry by proposalId
+    let foundToolUseId: string | null = null;
+    for (const [toolUseId, entry] of this.pendingToolBatch.tools) {
+      if (entry.proposalId === proposalId) {
+        foundToolUseId = toolUseId;
+        break;
+      }
+    }
+
+    if (!foundToolUseId) {
+      logger.warn({ proposalId }, "Proposal not found in batch, falling back to immediate send");
+      this.sendToolResultToClaude(proposalId, result);
+      return;
+    }
+
+    // Get and update the entry
+    const entry = this.pendingToolBatch.tools.get(foundToolUseId)!;
+    entry.status = 'resolved';
+    entry.result = result;
+
+    logger.info({
+      proposalId,
+      toolUseId: foundToolUseId,
+      batchSize: this.pendingToolBatch.tools.size,
+      resolved: Array.from(this.pendingToolBatch.tools.values()).filter(e => e.status === 'resolved').length,
+    }, "Updated batch entry with result");
+
+    // Check if all tools are resolved
+    this.checkAndSendBatchResults();
+  }
+
+  /**
+   * Check if all tools in the batch are resolved and send results to Claude
+   */
+  private async checkAndSendBatchResults(): Promise<void> {
+    if (!this.pendingToolBatch || !this.sessionId) return;
+
+    const allResolved = Array.from(this.pendingToolBatch.tools.values()).every(
+      entry => entry.status === 'resolved'
+    );
+
+    if (!allResolved) {
+      const pending = Array.from(this.pendingToolBatch.tools.values()).filter(e => e.status === 'pending');
+      logger.debug({ pendingCount: pending.length }, "Batch not complete, waiting for more results");
+      return;
+    }
+
+    logger.info({ batchSize: this.pendingToolBatch.tools.size }, "All tools resolved, sending batch results to Claude");
+
+    // Build tool_result blocks for all tools
+    const toolResults: ToolResultBlockParam[] = [];
+
+    for (const [toolUseId, entry] of this.pendingToolBatch.tools) {
+      if (!entry.result) continue;
+
+      toolResults.push({
+        type: "tool_result",
+        tool_use_id: toolUseId,
+        content: entry.result.error ? `Error: ${entry.result.error}` : entry.result.output,
+        is_error: !entry.result.success,
+      });
+
+      // Clean up tracking maps
+      if (entry.proposalId) {
+        this.toolUseIdToProposalId.delete(entry.proposalId);
+      }
+    }
+
+    // Clear the batch
+    const promptRef = this.pendingToolBatch.promptRef;
+    this.pendingToolBatch = null;
+
+    try {
+      // Send thinking start for processing tool results
+      const thinkingStartMsg = createMessage(
+        "thinking.start",
+        this.sessionId,
+        this.participantId,
+        {
+          agent: this.participantId,
+          prompt_ref: promptRef,
+          visible_to: "all",
+        }
+      );
+      this.client.send(thinkingStartMsg);
+
+      // Send response start
+      const responseStartMsg = createMessage(
+        "response.start",
+        this.sessionId,
+        this.participantId,
+        {
+          agent: this.participantId,
+          prompt_ref: promptRef,
+        }
+      );
+      this.client.send(responseStartMsg);
+
+      // Add ALL tool results to conversation history in a single message
+      this.conversationHistory.push({
+        role: "user",
+        content: toolResults,
+      });
+
+      // Call Claude again with all tool results
+      const response = await this.anthropic.messages.create({
+        model: this.model,
+        max_tokens: 4096,
+        messages: this.conversationHistory,
+        tools: this.getAllTools(),
+      });
+
+      // Handle Claude's response
+      let fullResponse = "";
+      const toolUses: ToolUseBlock[] = [];
+
+      for (const block of response.content) {
+        if (block.type === "text") {
+          fullResponse += block.text;
+          const chunkMsg = createMessage(
+            "response.chunk",
+            this.sessionId,
+            this.participantId,
+            {
+              text: block.text,
+            }
+          );
+          this.client.send(chunkMsg);
+        } else if (block.type === "tool_use") {
+          toolUses.push(block as ToolUseBlock);
+        }
+      }
+
+      // Add Claude's response to history
+      this.conversationHistory.push({
+        role: "assistant",
+        content: response.content,
+      });
+
+      // Create new batch if Claude requests more tools
+      if (toolUses.length > 0) {
+        this.pendingToolBatch = {
+          promptRef,
+          tools: new Map(),
+        };
+
+        for (const toolUse of toolUses) {
+          this.pendingToolBatch.tools.set(toolUse.id, {
+            toolUseId: toolUse.id,
+            toolName: toolUse.name,
+            proposalId: null,
+            status: 'pending',
+            result: null,
+          });
+        }
+
+        logger.info({ batchSize: toolUses.length }, "Created new tool batch for follow-up tool requests");
+
+        // Propose each tool
+        for (const toolUse of toolUses) {
+          if (toolUse.name === "execute_shell_command") {
+            const input = toolUse.input as { command: string };
+            await this.proposeShellCommand(input.command, toolUse.id);
+          } else if (this.mcpManager.isMCPTool(toolUse.name)) {
+            await this.proposeMCPTool(toolUse.name, toolUse.input as Record<string, unknown>, toolUse.id);
+          }
+        }
+      }
+
+      // Send thinking end
+      const thinkingEndMsg = createMessage(
+        "thinking.end",
+        this.sessionId,
+        this.participantId,
+        {
+          summary: `Processed ${toolResults.length} tool results, generated ${fullResponse.length} char response with ${toolUses.length} additional tool requests`,
+        }
+      );
+      this.client.send(thinkingEndMsg);
+
+      // Send response end
+      const responseEndMsg = createMessage(
+        "response.end",
+        this.sessionId,
+        this.participantId,
+        {
+          finish_reason: response.stop_reason === "tool_use" ? "tool_use" : "complete",
+        }
+      );
+      this.client.send(responseEndMsg);
+
+      logger.info(`[${this.agentName}] Sent ${toolResults.length} tool results to Claude (${fullResponse.length} chars, ${toolUses.length} additional tools)`);
+    } catch (error) {
+      logger.error({ error, toolResultCount: toolResults.length }, "Error sending batch results to Claude");
+
+      const errorMsg = createMessage("error", this.sessionId, this.participantId, {
+        code: "AGENT_ERROR",
+        message: error instanceof Error ? error.message : "Unknown error",
+        recoverable: true,
+      });
+      this.client.send(errorMsg);
     }
   }
 

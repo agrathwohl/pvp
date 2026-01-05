@@ -37,7 +37,9 @@ export function App({
     updateDraft,
     submitPrompt,
     approveGate,
+    approveAllGates,
     rejectGate,
+    rejectAllGates,
     setMode,
     toggleThinking,
   } = useTUIStore();
@@ -68,6 +70,11 @@ export function App({
 
     if (mode === "stream") {
       if (input === "p") {
+        // Block compose mode if there are pending gates
+        if (pendingGates.size > 0) {
+          // Don't allow new prompts while gates are pending
+          return;
+        }
         setMode("compose");
       } else if (input === "t") {
         toggleThinking();
@@ -92,9 +99,17 @@ export function App({
       if (gates.length > 0) {
         const [gateId] = gates[0];
         if (input === "a") {
+          // Approve single gate
           approveGate(gateId);
+        } else if (input === "A") {
+          // Accept ALL pending gates
+          approveAllGates("Batch approved by user");
         } else if (input === "r") {
+          // Reject single gate
           rejectGate(gateId, "Rejected by user");
+        } else if (input === "R") {
+          // Reject ALL pending gates
+          rejectAllGates("Batch rejected by user");
         }
       }
     }
@@ -203,38 +218,42 @@ export function App({
       {/* Gate Prompt */}
       {mode === "gate" && pendingGates.size > 0 && (
         <Box borderStyle="double" borderColor="yellow" paddingX={1}>
-          {Array.from(pendingGates.entries()).slice(0, 1).map(([id, gate]) => {
-            // Find the associated tool proposal if this is a tool gate
-            const toolProposal = gate.request.action_type === "tool"
-              ? toolProposals.get(gate.request.action_ref)
-              : null;
+          <Box flexDirection="column">
+            <Text bold color="yellow">
+              ⚠️  {pendingGates.size} PENDING GATE{pendingGates.size > 1 ? "S" : ""} - Must approve/reject before continuing
+            </Text>
+            {Array.from(pendingGates.entries()).map(([id, gate], index) => {
+              // Find the associated tool proposal if this is a tool gate
+              const toolProposal = gate.request.action_type === "tool"
+                ? toolProposals.get(gate.request.action_ref)
+                : null;
 
-            return (
-              <Box key={id} flexDirection="column">
-                <Text bold color="yellow">
-                  GATE: {gate.request.message}
-                </Text>
-                {toolProposal && (
-                  <>
-                    <Text color="yellow" dimColor>
-                      Tool: {toolProposal.tool_name} ({toolProposal.category})
-                    </Text>
-                    <Text color="yellow" dimColor>
-                      Risk Level: {toolProposal.risk_level}
-                    </Text>
-                    {toolProposal.arguments.full_command && (
-                      <Text color="cyan" dimColor>
-                        Command: {String(toolProposal.arguments.full_command)}
+              return (
+                <Box key={id} flexDirection="column" marginTop={index > 0 ? 1 : 0}>
+                  <Text color="yellow">
+                    [{index + 1}] {gate.request.message}
+                  </Text>
+                  {toolProposal && (
+                    <>
+                      <Text color="yellow" dimColor>
+                        {" "}└─ Tool: {toolProposal.tool_name} ({toolProposal.category}) | Risk: {toolProposal.risk_level}
                       </Text>
-                    )}
-                  </>
-                )}
-                <Text>
-                  [a]pprove | [r]eject
-                </Text>
-              </Box>
-            );
-          })}
+                      {toolProposal.arguments.full_command && (
+                        <Text color="cyan" dimColor>
+                          {" "}└─ Command: {String(toolProposal.arguments.full_command)}
+                        </Text>
+                      )}
+                    </>
+                  )}
+                </Box>
+              );
+            })}
+            <Box marginTop={1}>
+              <Text bold>
+                [a]pprove one | [A]ccept ALL | [r]eject one | [R]eject ALL
+              </Text>
+            </Box>
+          </Box>
         </Box>
       )}
 
