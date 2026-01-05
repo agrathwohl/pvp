@@ -256,7 +256,7 @@ export const useTUIStore = create<TUIState>((set, get) => ({
                 ? new Date(Date.now() + message.payload.timeout_seconds * 1000).toISOString()
                 : null,
             };
-            state.pendingGates.set(message.id, gate);
+            state.pendingGates.set(message.payload.action_ref, gate);
             set({ pendingGates: new Map(state.pendingGates), mode: "gate" });
           }
           break;

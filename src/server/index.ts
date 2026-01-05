@@ -5,6 +5,7 @@ import { Session } from "./session.js";
 import { MessageRouter } from "./router.js";
 import { createMessage } from "../protocol/messages.js";
 import { createLogger } from "../utils/logger.js";
+import { mergeServerConfig, type ServerConfig } from "../config/server-config.js";
 import type {
   SessionId,
   SessionConfig,
@@ -19,9 +20,11 @@ class PVPServer {
   private sessions: Map<SessionId, Session> = new Map();
   private router: MessageRouter;
   private heartbeatIntervals: Map<ParticipantId, NodeJS.Timeout> = new Map();
+  private config: ServerConfig;
 
-  constructor(port: number, host: string) {
-    this.transportServer = new WebSocketTransportServer(port, host);
+  constructor(config: ServerConfig) {
+    this.config = config;
+    this.transportServer = new WebSocketTransportServer(config.port, config.host);
     this.router = new MessageRouter();
 
     this.transportServer.onConnection((transport) => {
@@ -43,7 +46,7 @@ class PVPServer {
       });
     });
 
-    logger.info({ port, host }, "PVP Server initialized");
+    logger.info({ port: config.port, host: config.host, gitDir: config.git_dir }, "PVP Server initialized");
   }
 
   private async handleMessage(
@@ -236,6 +239,20 @@ class PVPServer {
     this.heartbeatIntervals.set(participantId, interval);
   }
 
+  /**
+   * Get the configured git directory for repository creation
+   */
+  getGitDir(): string {
+    return this.config.git_dir;
+  }
+
+  /**
+   * Get the full server configuration
+   */
+  getConfig(): ServerConfig {
+    return this.config;
+  }
+
   shutdown(): void {
     logger.info("Shutting down server");
 
@@ -267,26 +284,38 @@ const program = new Command();
 program
   .name("pvp-server")
   .description("Pair Vibecoding Protocol Server")
-  .option("-p, --port <port>", "Port to listen on", "3000")
-  .option("-h, --host <host>", "Host to bind to", "0.0.0.0")
+  .option("-p, --port <port>", "Port to listen on")
+  .option("-H, --host <host>", "Host to bind to")
+  .option("-g, --git-dir <path>", "Directory for git repositories (default: /tmp/pvp-git)")
+  .option("-c, --config <file>", "Path to server configuration file (JSON)")
   .action((options) => {
-    const port = parseInt(options.port, 10);
-    const host = options.host;
+    try {
+      const config = mergeServerConfig({
+        port: options.port,
+        host: options.host,
+        gitDir: options.gitDir,
+        config: options.config,
+      });
 
-    const server = new PVPServer(port, host);
+      const server = new PVPServer(config);
 
-    // Graceful shutdown
-    process.on("SIGINT", () => {
-      logger.info("Received SIGINT, shutting down gracefully");
-      server.shutdown();
-      process.exit(0);
-    });
+      // Graceful shutdown
+      process.on("SIGINT", () => {
+        logger.info("Received SIGINT, shutting down gracefully");
+        server.shutdown();
+        process.exit(0);
+      });
 
-    process.on("SIGTERM", () => {
-      logger.info("Received SIGTERM, shutting down gracefully");
-      server.shutdown();
-      process.exit(0);
-    });
+      process.on("SIGTERM", () => {
+        logger.info("Received SIGTERM, shutting down gracefully");
+        server.shutdown();
+        process.exit(0);
+      });
+    } catch (error) {
+      logger.error({ error }, "Failed to start server");
+      console.error("❌ Failed to start server:", error instanceof Error ? error.message : error);
+      process.exit(1);
+    }
   });
 
 program.parse();

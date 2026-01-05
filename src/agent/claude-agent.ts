@@ -146,6 +146,18 @@ export class ClaudeAgent {
           await this.handleInterrupt(message);
           break;
 
+        case "gate.reject":
+          // Handle gate rejection - need to send error result back to Claude
+          await this.handleGateRejection(message);
+          break;
+
+        case "gate.timeout":
+          // Handle gate timeout - may need to send error result back to Claude
+          if (message.payload.resolution === "rejected") {
+            await this.handleGateRejection(message);
+          }
+          break;
+
         default:
           // Log other message types for debugging
           logger.debug({ type: message.type }, "Received message");
@@ -382,6 +394,56 @@ export class ClaudeAgent {
       this.conversationHistory = [];
       logger.info(`[${this.agentName}] Conversation history cleared`);
     }
+  }
+
+  /**
+   * Handle gate rejection - send error result back to Claude
+   */
+  private async handleGateRejection(message: AnyMessage): Promise<void> {
+    if (message.type !== "gate.reject" && message.type !== "gate.timeout") return;
+    if (!this.sessionId) return;
+
+    // Get the gate/proposal ID
+    const proposalId = message.payload.gate;
+
+    // Determine the reason for rejection
+    const reason = message.type === "gate.reject"
+      ? message.payload.reason
+      : `Gate timed out (${message.payload.approvals_received}/${message.payload.approvals_required} approvals)`;
+
+    logger.info({ proposalId, reason }, "Gate rejected, sending error to Claude");
+
+    // Check if this is a shell tool proposal
+    const shellProposal = this.toolProposals.get(proposalId);
+    if (shellProposal) {
+      // Clean up proposal tracking (sendToolResultToClaude handles toolUseIdToProposalId)
+      this.toolProposals.delete(proposalId);
+
+      // Send error result to Claude
+      await this.sendToolResultToClaude(proposalId, {
+        success: false,
+        output: "",
+        error: `Command rejected by human: ${reason}`,
+      });
+      return;
+    }
+
+    // Check if this is an MCP tool proposal
+    const mcpProposal = this.mcpToolProposals.get(proposalId);
+    if (mcpProposal) {
+      // Clean up proposal tracking (sendToolResultToClaude handles toolUseIdToProposalId)
+      this.mcpToolProposals.delete(proposalId);
+
+      // Send error result to Claude
+      await this.sendToolResultToClaude(proposalId, {
+        success: false,
+        output: "",
+        error: `Tool "${mcpProposal.tool.mcp_tool.name}" rejected by human: ${reason}`,
+      });
+      return;
+    }
+
+    logger.warn({ proposalId }, "Gate rejection received but no matching proposal found");
   }
 
   /**
