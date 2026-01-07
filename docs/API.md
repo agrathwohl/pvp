@@ -20,17 +20,7 @@ Complete API documentation for the Pair Vibecoding Protocol npm package.
 ## Installation
 
 ```bash
-# Configure GitHub Packages registry
-npm config set @agrathwohl:registry https://npm.pkg.github.com
-
-# npm
-npm install @agrathwohl/pvp
-
-# yarn
-yarn add @agrathwohl/pvp
-
-# pnpm
-pnpm add @agrathwohl/pvp
+npm install github:agrathwohl/pvp
 ```
 
 ### Runtime Requirements

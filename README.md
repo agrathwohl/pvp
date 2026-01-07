@@ -32,20 +32,8 @@ PVP is NOT a chatbot. It's a coordination layer where multiple humans and AI age
 
 ## Installation
 
-### GitHub Packages (Recommended)
-
 ```bash
-# Configure GitHub Packages registry for @agrathwohl scope
-npm config set @agrathwohl:registry https://npm.pkg.github.com
-
-# Install
-npm install @agrathwohl/pvp
-
-# Or with yarn
-yarn add @agrathwohl/pvp
-
-# Or with pnpm
-pnpm add @agrathwohl/pvp
+npm install github:agrathwohl/pvp
 ```
 
 ### From Source
