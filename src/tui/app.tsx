@@ -33,6 +33,7 @@ export function App({
     currentResponse,
     error,
     debugLog,
+    debugVisible,
     connect,
     disconnect,
     updateDraft,
@@ -43,6 +44,7 @@ export function App({
     rejectAllGates,
     setMode,
     toggleThinking,
+    toggleDebug,
     fetchDecisionTracking,
   } = useTUIStore();
 
@@ -85,23 +87,44 @@ export function App({
       return;
     }
 
+    // GATE CONTROLS - Work from ANY mode when gates are pending
+    if (pendingGates.size > 0) {
+      const gates = Array.from(pendingGates.entries());
+      const [gateId] = gates[0];
+
+      if (input === "a") {
+        approveGate(gateId);
+        return;
+      } else if (input === "A") {
+        approveAllGates("Batch approved by user");
+        return;
+      } else if (input === "r") {
+        rejectGate(gateId, "Rejected by user");
+        return;
+      } else if (input === "R") {
+        rejectAllGates("Batch rejected by user");
+        return;
+      }
+    }
+
+    // MODE-SPECIFIC CONTROLS
     if (mode === "stream") {
       if (input === "p") {
         // Block compose mode if there are pending gates
         if (pendingGates.size > 0) {
-          // Don't allow new prompts while gates are pending
           return;
         }
         setMode("compose");
       } else if (input === "t") {
         toggleThinking();
+      } else if (input === "d") {
+        toggleDebug();
       }
     } else if (mode === "compose") {
       if (key.escape) {
         setMode("stream");
         updateDraft("");
       } else if (key.return) {
-        // Any Enter key sends the message
         const target = getMessageTarget();
         if (target && draftPrompt.trim().length > 0) {
           submitPrompt(target.info.id);
@@ -110,24 +133,6 @@ export function App({
         updateDraft(draftPrompt.slice(0, -1));
       } else if (!key.ctrl && !key.meta && input) {
         updateDraft(draftPrompt + input);
-      }
-    } else if (mode === "gate") {
-      const gates = Array.from(pendingGates.entries());
-      if (gates.length > 0) {
-        const [gateId] = gates[0];
-        if (input === "a") {
-          // Approve single gate
-          approveGate(gateId);
-        } else if (input === "A") {
-          // Accept ALL pending gates
-          approveAllGates("Batch approved by user");
-        } else if (input === "r") {
-          // Reject single gate
-          rejectGate(gateId, "Rejected by user");
-        } else if (input === "R") {
-          // Reject ALL pending gates
-          rejectAllGates("Batch rejected by user");
-        }
       }
     }
   });
@@ -142,7 +147,7 @@ export function App({
   return (
     <Box flexDirection="column" height="100%">
       {/* Header */}
-      <Box borderStyle="single" paddingX={1}>
+      <Box borderStyle="single" borderColor={pendingGates.size > 0 ? "red" : "white"} paddingX={1}>
         <Text>
           PVP Session {sessionId.slice(0, 8)}...{" "}
           {connected ? (
@@ -150,7 +155,12 @@ export function App({
           ) : (
             <Text color="red">○</Text>
           )}{" "}
-          | Participants: {participants.size} | Gates: {pendingGates.size}
+          | Participants: {participants.size}
+          {pendingGates.size > 0 ? (
+            <Text color="red" bold inverse> | 🚨 {pendingGates.size} GATE{pendingGates.size > 1 ? "S" : ""} PENDING </Text>
+          ) : (
+            <Text> | Gates: 0</Text>
+          )}
         </Text>
       </Box>
 
@@ -259,42 +269,64 @@ export function App({
         </Box>
       )}
 
-      {/* Gate Prompt */}
-      {mode === "gate" && pendingGates.size > 0 && (
-        <Box borderStyle="double" borderColor="yellow" paddingX={1}>
+      {/* Gate Approval Panel - ALWAYS visible when gates pending */}
+      {pendingGates.size > 0 && (
+        <Box borderStyle="double" borderColor="red" paddingX={1} marginY={1}>
           <Box flexDirection="column">
-            <Text bold color="yellow">
-              ⚠️  {pendingGates.size} PENDING GATE{pendingGates.size > 1 ? "S" : ""} - Must approve/reject before continuing
+            <Text bold color="red" inverse>
+              {" "}🚨 ACTION REQUIRED: {pendingGates.size} PENDING GATE{pendingGates.size > 1 ? "S" : ""} 🚨{" "}
             </Text>
-            {Array.from(pendingGates.entries()).map(([id, gate], index) => {
-              // Find the associated tool proposal if this is a tool gate
-              const toolProposal = gate.request.action_type === "tool"
-                ? toolProposals.get(gate.request.action_ref)
-                : null;
+            <Text color="red" bold>
+              You MUST approve or reject before the agent can continue.
+            </Text>
+            <Box marginTop={1} flexDirection="column">
+              {Array.from(pendingGates.entries()).map(([id, gate], index) => {
+                const toolProposal = gate.request.action_type === "tool"
+                  ? toolProposals.get(gate.request.action_ref)
+                  : null;
 
-              return (
-                <Box key={id} flexDirection="column" marginTop={index > 0 ? 1 : 0}>
-                  <Text color="yellow">
-                    [{index + 1}] {gate.request.message}
-                  </Text>
-                  {toolProposal && (
-                    <>
-                      <Text color="yellow" dimColor>
-                        {" "}└─ Tool: {toolProposal.tool_name} ({toolProposal.category}) | Risk: {toolProposal.risk_level}
-                      </Text>
-                      {toolProposal.arguments.full_command && (
-                        <Text color="cyan" dimColor>
-                          {" "}└─ Command: {String(toolProposal.arguments.full_command)}
+                return (
+                  <Box key={id} flexDirection="column" marginTop={index > 0 ? 1 : 0} borderStyle="single" borderColor="yellow" paddingX={1}>
+                    <Text color="yellow" bold>
+                      Gate #{index + 1}: {gate.request.message}
+                    </Text>
+                    <Text color="gray">
+                      Action Type: {gate.request.action_type} | Ref: {gate.request.action_ref.slice(0, 12)}...
+                    </Text>
+                    {toolProposal && (
+                      <>
+                        <Text color="cyan">
+                          Tool: <Text bold>{toolProposal.tool_name}</Text> ({toolProposal.category})
                         </Text>
-                      )}
-                    </>
-                  )}
-                </Box>
-              );
-            })}
-            <Box marginTop={1}>
-              <Text bold>
-                [a]pprove one | [A]ccept ALL | [r]eject one | [R]eject ALL
+                        <Text color={toolProposal.risk_level === "critical" ? "red" : toolProposal.risk_level === "high" ? "yellow" : "green"}>
+                          Risk Level: <Text bold>{toolProposal.risk_level.toUpperCase()}</Text>
+                        </Text>
+                        {toolProposal.arguments.full_command && (
+                          <Text color="magenta">
+                            Command: <Text bold>{String(toolProposal.arguments.full_command)}</Text>
+                          </Text>
+                        )}
+                        {toolProposal.description && (
+                          <Text dimColor>
+                            Description: {toolProposal.description}
+                          </Text>
+                        )}
+                      </>
+                    )}
+                    <Text dimColor>
+                      Approvals: {gate.approvals.length} | Rejections: {gate.rejections.length}
+                    </Text>
+                  </Box>
+                );
+              })}
+            </Box>
+            <Box marginTop={1} borderStyle="round" borderColor="green" paddingX={1}>
+              <Text bold color="white">
+                CONTROLS:{" "}
+                <Text color="green">[a]</Text> approve first{" "}
+                <Text color="green">[A]</Text> approve ALL{" "}
+                <Text color="red">[r]</Text> reject first{" "}
+                <Text color="red">[R]</Text> reject ALL
               </Text>
             </Box>
           </Box>
@@ -320,7 +352,7 @@ export function App({
       )}
 
       {/* Status Bar */}
-      <Box borderStyle="single" paddingX={1}>
+      <Box borderStyle="single" borderColor={pendingGates.size > 0 ? "red" : "white"} paddingX={1}>
         <Text>
           Participants:{" "}
           {humans.map((p) => p.info.name).join(", ")}
@@ -328,13 +360,26 @@ export function App({
           Agents: {agents.map((p) => p.info.name).join(", ")}
           {" | "}
           Mode: {mode}
-          {" | "}
-          Keys: [p]rompt [t]hinking [Ctrl+C]quit
+          {pendingGates.size > 0 ? (
+            <>
+              {" | "}
+              <Text color="red" bold>⚠️ GATES: {pendingGates.size}</Text>
+              {" | "}
+              <Text color="green">[a]</Text>/<Text color="green">[A]</Text> approve
+              {" "}
+              <Text color="red">[r]</Text>/<Text color="red">[R]</Text> reject
+            </>
+          ) : (
+            <>
+              {" | "}
+              Keys: [p]rompt [t]hinking [d]ebug [Ctrl+C]quit
+            </>
+          )}
         </Text>
       </Box>
 
       {/* Debug Log */}
-      {debugLog.length > 0 && (
+      {debugVisible && debugLog.length > 0 && (
         <Box borderStyle="single" borderColor="magenta" paddingX={1}>
           <Box flexDirection="column">
             <Text bold color="magenta">DEBUG LOG:</Text>

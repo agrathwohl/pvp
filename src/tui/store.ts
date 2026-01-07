@@ -76,6 +76,7 @@ export interface TUIState {
   thinkingVisible: boolean;
   error: string | null;
   debugLog: string[];
+  debugVisible: boolean;
 
   // Actions
   connect: (url: string, sessionId: string, participantId: ParticipantId, name: string, role: string, isCreator: boolean) => void;
@@ -90,6 +91,7 @@ export interface TUIState {
   rejectAllGates: (reason: string) => void;
   raiseInterrupt: (urgency: InterruptUrgency, message: string, targetAgent?: ParticipantId) => void;
   toggleThinking: () => void;
+  toggleDebug: () => void;
   setError: (error: string | null) => void;
   fetchDecisionTracking: () => Promise<void>;
 }
@@ -123,6 +125,7 @@ export const useTUIStore = create<TUIState>((set, get) => ({
   thinkingVisible: false,
   error: null,
   debugLog: [],
+  debugVisible: false,
 
   // Actions
   connect: (url, sessionId, participantId, name, role, isCreator) => {
@@ -297,16 +300,22 @@ export const useTUIStore = create<TUIState>((set, get) => ({
           break;
 
         case "gate.approve":
-        case "gate.reject":
           {
             const gate = state.pendingGates.get(message.payload.gate);
             if (gate) {
-              if (message.type === "gate.approve") {
-                gate.approvals.push(message.payload.approver);
-              } else {
-                gate.rejections.push(message.payload.rejector);
-              }
+              gate.approvals.push(message.payload.approver);
               set({ pendingGates: new Map(state.pendingGates) });
+            }
+          }
+          break;
+
+        case "gate.reject":
+          {
+            // Gate rejection removes the gate entirely (server already removed it)
+            state.pendingGates.delete(message.payload.gate);
+            set({ pendingGates: new Map(state.pendingGates) });
+            if (state.pendingGates.size === 0) {
+              set({ mode: "stream" });
             }
           }
           break;
@@ -538,6 +547,10 @@ export const useTUIStore = create<TUIState>((set, get) => ({
 
   toggleThinking: () => {
     set((state) => ({ thinkingVisible: !state.thinkingVisible }));
+  },
+
+  toggleDebug: () => {
+    set((state) => ({ debugVisible: !state.debugVisible }));
   },
 
   setError: (error) => {

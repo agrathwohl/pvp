@@ -29,6 +29,9 @@
  */
 
 import { Command } from "commander";
+import { mkdir } from "fs/promises";
+import { execSync } from "child_process";
+import path from "path";
 import { WebSocketTransportServer } from "../transports/websocket.js";
 import { Session } from "./session.js";
 import { MessageRouter } from "./router.js";
@@ -195,11 +198,25 @@ class PVPServer {
     const sessionId = message.session;
     const { name, config } = message.payload;
 
-    // Create session
-    const session = new Session(sessionId, name, config);
+    // Create session working directory
+    const workingDirectory = path.join(this.config.git_dir, sessionId);
+    await mkdir(workingDirectory, { recursive: true });
+
+    // Initialize git repository with agent as committer
+    try {
+      execSync("git init", { cwd: workingDirectory, stdio: "pipe" });
+      execSync('git config user.name "PVP Agent"', { cwd: workingDirectory, stdio: "pipe" });
+      execSync('git config user.email "agent@pvp.session"', { cwd: workingDirectory, stdio: "pipe" });
+      logger.info({ sessionId, workingDirectory }, "Git repository initialized for session");
+    } catch (error) {
+      logger.warn({ sessionId, workingDirectory, error }, "Failed to initialize git repository");
+    }
+
+    // Create session with working directory
+    const session = new Session(sessionId, name, config, workingDirectory);
     this.sessions.set(sessionId, session);
 
-    logger.info({ sessionId, name, participantId }, "Session created");
+    logger.info({ sessionId, name, workingDirectory, participantId }, "Session created");
 
     // Notify bridge service of new session
     this.bridgeService.onSessionStart(sessionId, []);

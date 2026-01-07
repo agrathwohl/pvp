@@ -98,6 +98,10 @@ export class MessageRouter {
           await this.handleForkCreate(session, message, broadcast);
           break;
 
+        case "tool.result":
+          await this.handleToolResult(session, message, broadcast);
+          break;
+
         default:
           // Broadcast other message types as-is
           broadcast(message);
@@ -150,6 +154,21 @@ export class MessageRouter {
     for (const msg of messageHistory) {
       broadcast(msg, (id) => id === participant.id);
     }
+
+    // Send session working directory to the new joiner
+    const workingDirMsg = createMessage(
+      "context.add",
+      session.getId(),
+      "system",
+      {
+        key: "session:working_directory",
+        content_type: "text",
+        content: session.getWorkingDirectory(),
+        source: "session",
+        tags: ["session_metadata", "working_directory"],
+      }
+    );
+    broadcast(workingDirMsg, (id) => id === participant.id);
 
     // Broadcast new participant announcement to everyone
     const announcement = createMessage(
@@ -464,6 +483,70 @@ export class MessageRouter {
 
     session.createFork(fork);
     broadcast(message);
+  }
+
+
+  private async handleToolResult(
+    session: Session,
+    message: MessageEnvelope<"tool.result">,
+    broadcast: (msg: AnyMessage, filter?: (id: string) => boolean) => void
+  ): Promise<void> {
+    const { tool_proposal, success } = message.payload;
+
+    // Always broadcast the tool result
+    broadcast(message);
+
+    // Only process file feedback for successful file operations
+    if (!success) return;
+
+    // Look up the original tool.propose message
+    const proposal = session.getMessage(tool_proposal);
+    if (!proposal || proposal.type !== "tool.propose") return;
+
+    const proposalPayload = proposal.payload as {
+      category: string;
+      arguments: Record<string, unknown>;
+      tool_name: string;
+    };
+
+    // Check if this was a file write operation
+    if (proposalPayload.category !== "file_write") return;
+
+    // Extract file path and content from the proposal arguments
+    // Note: field is "path" not "file_path" per file-tool.ts
+    const filePath = proposalPayload.arguments.path as string | undefined;
+    const content = proposalPayload.arguments.content as string | undefined;
+
+    if (!filePath || content === undefined) return;
+
+    // Emit context.add with the file content for all participants
+    const contextMsg = createMessage(
+      "context.add",
+      session.getId(),
+      "system",
+      {
+        key: `file:${filePath}`,
+        content_type: "file",
+        content: content,
+        source: `tool:${proposalPayload.tool_name}`,
+        tags: ["file_write", "auto_context"],
+      }
+    );
+
+    // Add to session context
+    const contextItem = this.contextManager.createContextItem(
+      contextMsg.payload,
+      "system"
+    );
+    session.addContext(contextItem);
+
+    // Broadcast to all participants
+    broadcast(contextMsg);
+
+    logger.info(
+      { sessionId: session.getId(), filePath, tool: proposalPayload.tool_name },
+      "File write context added"
+    );
   }
 
   private createUnauthorizedError(message: string): Error {

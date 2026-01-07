@@ -605,6 +605,7 @@ export interface SessionState {
   pendingGates: Map<MessageId, GateState>;
   createdAt: string;
   seq: number;
+  workingDirectory: string;
 }
 
 export interface ParticipantState {

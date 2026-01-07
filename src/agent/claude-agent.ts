@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { MessageParam, ToolUseBlock, Tool, ToolResultBlockParam } from "@anthropic-ai/sdk/resources/messages.js";
+import path from "path";
 import { WebSocketClient } from "../transports/websocket.js";
 import { createMessage } from "../protocol/messages.js";
 import { createParticipantInfo } from "../protocol/defaults.js";
@@ -31,6 +32,7 @@ export class ClaudeAgent {
   private anthropic: Anthropic;
   private participantId: ParticipantId;
   private sessionId: SessionId | null = null;
+  private workingDirectory: string | null = null;
   private agentName: string;
   private model: string;
   private conversationHistory: MessageParam[] = [];
@@ -176,6 +178,14 @@ export class ClaudeAgent {
           // Handle gate timeout - may need to send error result back to Claude
           if (message.payload.resolution === "rejected") {
             await this.handleGateRejection(message);
+          }
+          break;
+
+        case "context.add":
+          // Check for session working directory
+          if (message.payload.key === "session:working_directory" && typeof message.payload.content === "string") {
+            this.workingDirectory = message.payload.content;
+            logger.info({ workingDirectory: this.workingDirectory }, "Session working directory set");
           }
           break;
 
@@ -771,6 +781,12 @@ export class ClaudeAgent {
 
     try {
       const shellCmd = categorizeCommand(command);
+
+      // Set working directory if available from session
+      if (this.workingDirectory) {
+        shellCmd.cwd = this.workingDirectory;
+      }
+
       const proposalMsg = this.shellToolHandler.proposeCommand(
         command,
         this.sessionId,
@@ -816,6 +832,19 @@ export class ClaudeAgent {
   }
 
   /**
+   * Resolve a file path relative to the working directory if not absolute
+   */
+  private resolveFilePath(filePath: string): string {
+    if (path.isAbsolute(filePath)) {
+      return filePath;
+    }
+    if (this.workingDirectory) {
+      return path.resolve(this.workingDirectory, filePath);
+    }
+    return filePath;
+  }
+
+  /**
    * Propose a file write operation through the PVP gate system
    */
   public async proposeFileWrite(
@@ -828,18 +857,21 @@ export class ClaudeAgent {
       throw new Error("Not connected to a session");
     }
 
+    // Resolve relative paths to working directory
+    const resolvedPath = this.resolveFilePath(filePath);
+
     try {
       const proposalMsg = this.fileToolHandler.proposeFileWrite(
-        filePath,
+        resolvedPath,
         content,
         createDirs,
         this.sessionId,
         this.participantId
       );
 
-      // Store the proposal for later execution
+      // Store the proposal for later execution (use resolved path)
       this.fileWriteProposals.set(proposalMsg.id, {
-        path: filePath,
+        path: resolvedPath,
         content,
         createDirs,
         toolUseId,
@@ -888,9 +920,12 @@ export class ClaudeAgent {
       throw new Error("Not connected to a session");
     }
 
+    // Resolve relative paths to working directory
+    const resolvedPath = this.resolveFilePath(filePath);
+
     try {
       const proposalMsg = this.fileToolHandler.proposeFileEdit(
-        filePath,
+        resolvedPath,
         oldText,
         newText,
         occurrence,
@@ -898,9 +933,9 @@ export class ClaudeAgent {
         this.participantId
       );
 
-      // Store the proposal for later execution
+      // Store the proposal for later execution (use resolved path)
       this.fileEditProposals.set(proposalMsg.id, {
-        path: filePath,
+        path: resolvedPath,
         oldText,
         newText,
         occurrence,
@@ -1417,22 +1452,76 @@ export class ClaudeAgent {
    */
   private async proposeToolBatch(toolUses: ToolUseBlock[]): Promise<void> {
     for (const toolUse of toolUses) {
-      if (toolUse.name === "execute_shell_command") {
-        const input = toolUse.input as { command: string };
-        logger.info({ command: input.command, toolUseId: toolUse.id }, "Claude requested shell command execution");
-        await this.proposeShellCommand(input.command, toolUse.id);
-      } else if (toolUse.name === "file_write") {
-        const input = toolUse.input as { path: string; content: string; create_dirs?: boolean };
-        logger.info({ path: input.path, bytes: input.content.length, toolUseId: toolUse.id }, "Claude requested file write");
-        await this.proposeFileWrite(input.path, input.content, input.create_dirs || false, toolUse.id);
-      } else if (toolUse.name === "file_edit") {
-        const input = toolUse.input as { path: string; old_text: string; new_text: string; occurrence?: number };
-        logger.info({ path: input.path, toolUseId: toolUse.id }, "Claude requested file edit");
-        await this.proposeFileEdit(input.path, input.old_text, input.new_text, input.occurrence || 0, toolUse.id);
-      } else if (this.mcpManager.isMCPTool(toolUse.name)) {
-        logger.info({ tool: toolUse.name, toolUseId: toolUse.id }, "Claude requested MCP tool execution");
-        await this.proposeMCPTool(toolUse.name, toolUse.input as Record<string, unknown>, toolUse.id);
+      try {
+        // Validate input exists
+        if (!toolUse.input) {
+          logger.error({ toolUseId: toolUse.id, toolName: toolUse.name }, "Tool use has undefined input");
+          // Mark as failed in batch so we don't wait forever
+          this.markToolFailed(toolUse.id, "Tool input was undefined");
+          continue;
+        }
+
+        if (toolUse.name === "execute_shell_command") {
+          const input = toolUse.input as { command: string };
+          if (!input.command) {
+            logger.error({ toolUseId: toolUse.id }, "Shell command input missing command field");
+            this.markToolFailed(toolUse.id, "Missing command field");
+            continue;
+          }
+          logger.info({ command: input.command, toolUseId: toolUse.id }, "Claude requested shell command execution");
+          await this.proposeShellCommand(input.command, toolUse.id);
+        } else if (toolUse.name === "file_write") {
+          const input = toolUse.input as { path: string; content: string; create_dirs?: boolean };
+          if (!input.path || input.content === undefined) {
+            logger.error({ toolUseId: toolUse.id, hasPath: !!input.path, hasContent: input.content !== undefined }, "File write input missing required fields");
+            this.markToolFailed(toolUse.id, "Missing path or content field");
+            continue;
+          }
+          logger.info({ path: input.path, bytes: input.content.length, toolUseId: toolUse.id }, "Claude requested file write");
+          await this.proposeFileWrite(input.path, input.content, input.create_dirs || false, toolUse.id);
+        } else if (toolUse.name === "file_edit") {
+          const input = toolUse.input as { path: string; old_text: string; new_text: string; occurrence?: number };
+          if (!input.path || input.old_text === undefined || input.new_text === undefined) {
+            logger.error({ toolUseId: toolUse.id }, "File edit input missing required fields");
+            this.markToolFailed(toolUse.id, "Missing required fields");
+            continue;
+          }
+          logger.info({ path: input.path, toolUseId: toolUse.id }, "Claude requested file edit");
+          await this.proposeFileEdit(input.path, input.old_text, input.new_text, input.occurrence || 0, toolUse.id);
+        } else if (this.mcpManager.isMCPTool(toolUse.name)) {
+          logger.info({ tool: toolUse.name, toolUseId: toolUse.id }, "Claude requested MCP tool execution");
+          await this.proposeMCPTool(toolUse.name, toolUse.input as Record<string, unknown>, toolUse.id);
+        } else {
+          logger.warn({ toolName: toolUse.name, toolUseId: toolUse.id }, "Unknown tool type");
+          this.markToolFailed(toolUse.id, `Unknown tool: ${toolUse.name}`);
+        }
+      } catch (error) {
+        logger.error({ error, toolUseId: toolUse.id, toolName: toolUse.name }, "Error proposing tool");
+        this.markToolFailed(toolUse.id, `Error proposing tool: ${error}`);
       }
+    }
+  }
+
+  /**
+   * Mark a tool as failed in the pending batch
+   */
+  private markToolFailed(toolUseId: string, errorMessage: string): void {
+    if (!this.pendingToolBatch) {
+      return;
+    }
+
+    const entry = this.pendingToolBatch.tools.get(toolUseId);
+    if (entry) {
+      entry.status = 'resolved';
+      entry.result = {
+        success: false,
+        output: "",
+        error: errorMessage,
+      };
+      logger.info({ toolUseId, errorMessage }, "Marked tool as failed in batch");
+
+      // Check if all tools are now resolved
+      this.checkAndSendBatchResults();
     }
   }
 

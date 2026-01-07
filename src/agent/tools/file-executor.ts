@@ -121,26 +121,26 @@ const PATH_PATTERNS: FilePathPattern[] = [
 /**
  * Get the current working directory for relative path calculations
  */
-function getProjectRoot(): string {
-  return process.cwd();
+function getProjectRoot(cwd?: string): string {
+  return cwd ?? process.cwd();
 }
 
 /**
  * Normalize and resolve a file path
  */
-function normalizePath(filePath: string): string {
+function normalizePath(filePath: string, cwd?: string): string {
   if (isAbsolute(filePath)) {
     return resolve(filePath);
   }
-  return resolve(getProjectRoot(), filePath);
+  return resolve(getProjectRoot(cwd), filePath);
 }
 
 /**
  * Check if path is within the project directory
  */
-function isWithinProject(filePath: string): boolean {
-  const normalized = normalizePath(filePath);
-  const projectRoot = getProjectRoot();
+function isWithinProject(filePath: string, cwd?: string): boolean {
+  const normalized = normalizePath(filePath, cwd);
+  const projectRoot = getProjectRoot(cwd);
   const rel = relative(projectRoot, normalized);
   return !rel.startsWith("..") && !isAbsolute(rel);
 }
@@ -150,10 +150,11 @@ function isWithinProject(filePath: string): boolean {
  */
 export function categorizeFilePath(
   filePath: string,
-  operation: FileCategory = "file_write"
+  operation: FileCategory = "file_write",
+  cwd?: string
 ): FileWriteCommand | FileEditCommand {
-  const normalizedPath = normalizePath(filePath);
-  const withinProject = isWithinProject(filePath);
+  const normalizedPath = normalizePath(filePath, cwd);
+  const withinProject = isWithinProject(filePath, cwd);
 
   // Find matching pattern
   let matchedPattern: FilePathPattern | undefined;
@@ -215,9 +216,9 @@ export function isPathBlocked(filePath: string): { blocked: boolean; reason?: st
 export async function writeFile(
   filePath: string,
   content: string,
-  options: { createDirs?: boolean } = {}
+  options: { createDirs?: boolean; cwd?: string } = {}
 ): Promise<FileOperationResult> {
-  const normalizedPath = normalizePath(filePath);
+  const normalizedPath = normalizePath(filePath, options.cwd);
 
   // Check if blocked
   const blockCheck = isPathBlocked(normalizedPath);
@@ -279,9 +280,10 @@ export async function editFile(
   filePath: string,
   oldText: string,
   newText: string,
-  occurrence: number = 0 // 0 = all, 1+ = specific occurrence
+  occurrence: number = 0, // 0 = all, 1+ = specific occurrence
+  cwd?: string
 ): Promise<FileOperationResult> {
-  const normalizedPath = normalizePath(filePath);
+  const normalizedPath = normalizePath(filePath, cwd);
 
   // Check if blocked
   const blockCheck = isPathBlocked(normalizedPath);

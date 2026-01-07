@@ -21,7 +21,7 @@ const logger = createLogger("session");
 export class Session {
   private state: SessionState;
 
-  constructor(id: SessionId, name: string | undefined, config: SessionConfig) {
+  constructor(id: SessionId, name: string | undefined, config: SessionConfig, workingDirectory: string) {
     this.state = {
       id,
       name,
@@ -34,9 +34,14 @@ export class Session {
       pendingGates: new Map(),
       createdAt: new Date().toISOString(),
       seq: 0,
+      workingDirectory,
     };
 
-    logger.info({ sessionId: id, name }, "Session created");
+    logger.info({ sessionId: id, name, workingDirectory }, "Session created");
+  }
+
+  getWorkingDirectory(): string {
+    return this.state.workingDirectory;
   }
 
   getId(): SessionId {
