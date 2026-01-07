@@ -30,8 +30,8 @@ fi
 # Function to query PVP bridge service via socket (preferred)
 query_pvp_socket() {
     if [ -S "$PVP_SOCKET" ]; then
-        # Use nc (netcat) for socket communication
-        response=$(echo '{"action":"get_commit_context"}' | nc -U "$PVP_SOCKET" 2>/dev/null) || return 1
+        # Use nc (netcat) for socket communication with 1s timeout
+        response=$(echo '{"action":"get_commit_context"}' | nc -w 1 -U "$PVP_SOCKET" 2>/dev/null) || return 1
         echo "$response"
         return 0
     fi

@@ -208,12 +208,14 @@ class PVPServer {
       execSync('git config user.name "PVP Agent"', { cwd: workingDirectory, stdio: "pipe" });
       execSync('git config user.email "agent@pvp.session"', { cwd: workingDirectory, stdio: "pipe" });
       logger.info({ sessionId, workingDirectory }, "Git repository initialized for session");
+
     } catch (error) {
       logger.warn({ sessionId, workingDirectory, error }, "Failed to initialize git repository");
     }
 
     return workingDirectory;
   }
+
 
   /**
    * Create and register a new session.
