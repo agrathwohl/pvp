@@ -57,6 +57,7 @@
     "server": "tsx src/server/index.ts",
     "tui": "tsx src/tui/index.ts",
     "agent": "bun run src/agent/index.ts",
+    "agent:remote": "bun run src/agent/index.ts --server wss://ws.pvp.codes",
     "dev": "tsx watch src/server/index.ts",
     "test": "vitest run",
     "deploy": "ssh -i ~/.pem/LightsailDefaultKey-us-east-2.pem ubuntu@3.128.173.51 'cd ~/pvp && git pull && ~/.bun/bin/bun install --ignore-scripts && ./node_modules/.bin/tsc && pm2 restart pvp-server'"
