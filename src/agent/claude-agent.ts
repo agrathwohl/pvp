@@ -10,6 +10,7 @@ import { createShellToolHandler } from "./tools/shell-tool.js";
 import { categorizeCommand } from "./tools/shell-executor.js";
 import { createFileToolHandler } from "./tools/file-tool.js";
 import { categorizeFilePath, isPathBlocked, type FileWriteCommand, type FileEditCommand } from "./tools/file-executor.js";
+import { createGitCommitToolHandler, type GitCommitArgs, type CommitSessionContext } from "./tools/git-commit-tool.js";
 import { MCPManager, type MCPServerConfig, type MCPToolDefinition } from "./mcp/index.js";
 import type {
   AnyMessage,
@@ -38,9 +39,11 @@ export class ClaudeAgent {
   private conversationHistory: MessageParam[] = [];
   private shellToolHandler: ReturnType<typeof createShellToolHandler>;
   private fileToolHandler: ReturnType<typeof createFileToolHandler>;
+  private gitCommitToolHandler: ReturnType<typeof createGitCommitToolHandler>;
   private toolProposals: Map<MessageId, { command: ShellCommand; proposalMsg: AnyMessage }> = new Map();
   private fileWriteProposals: Map<MessageId, { path: string; content: string; createDirs: boolean; toolUseId: string }> = new Map();
   private fileEditProposals: Map<MessageId, { path: string; oldText: string; newText: string; occurrence: number; toolUseId: string }> = new Map();
+  private gitCommitProposals: Map<MessageId, { args: GitCommitArgs; context: CommitSessionContext; toolUseId: string }> = new Map();
   private toolUseIdToProposalId: Map<MessageId, string> = new Map();
   private currentPromptRef: MessageId | null = null;
 
@@ -83,6 +86,9 @@ export class ClaudeAgent {
 
     // Initialize file tool handler
     this.fileToolHandler = createFileToolHandler();
+
+    // Initialize git commit tool handler
+    this.gitCommitToolHandler = createGitCommitToolHandler();
 
     // Initialize MCP manager
     this.mcpManager = new MCPManager();
@@ -377,6 +383,13 @@ export class ClaudeAgent {
     if (this.fileEditProposals.has(tool_proposal)) {
       logger.info({ toolProposal: tool_proposal, approvers: approved_by }, "Executing approved file edit");
       await this.executeFileEdit(tool_proposal);
+      return;
+    }
+
+    // Check if this is a git commit proposal
+    if (this.gitCommitProposals.has(tool_proposal)) {
+      logger.info({ toolProposal: tool_proposal, approvers: approved_by }, "Executing approved git commit");
+      await this.executeGitCommit(tool_proposal);
       return;
     }
 
@@ -762,6 +775,44 @@ export class ClaudeAgent {
       }
     });
 
+    // Add git_commit tool following PVP Git Commit Protocol
+    tools.push({
+      name: "git_commit",
+      description: "Create a git commit following the PVP Git Commit Protocol with rich decision context. Use conventional commit types and include session/participant tracking via git trailers.",
+      input_schema: {
+        type: "object",
+        properties: {
+          type: {
+            type: "string",
+            enum: ["feat", "fix", "refactor", "explore", "revert", "docs", "test", "chore", "style"],
+            description: "Conventional commit type"
+          },
+          description: {
+            type: "string",
+            description: "Short description of the change (imperative mood, lowercase)"
+          },
+          scope: {
+            type: "string",
+            description: "Optional scope (e.g., component name, module)"
+          },
+          body: {
+            type: "string",
+            description: "Optional longer description explaining what and why"
+          },
+          confidence: {
+            type: "number",
+            description: "Confidence level 0.0-1.0 in the decision"
+          },
+          decision_type: {
+            type: "string",
+            enum: ["implementation", "architecture", "exploration", "correction", "reversion", "merge-resolution"],
+            description: "Type of decision this commit represents"
+          }
+        },
+        required: ["type", "description"]
+      }
+    });
+
     // Add MCP tools with namespaced names
     for (const mcpTool of this.mcpManager.getAllTools()) {
       tools.push({
@@ -967,6 +1018,142 @@ export class ClaudeAgent {
     } catch (error) {
       logger.error({ error, path: filePath }, "Failed to propose file edit");
       throw error;
+    }
+  }
+
+  /**
+   * Propose a git commit through the PVP gate system
+   */
+  public async proposeGitCommit(
+    input: {
+      type: string;
+      description: string;
+      scope?: string;
+      body?: string;
+      confidence?: number;
+      decision_type?: string;
+    },
+    toolUseId: string
+  ): Promise<MessageId> {
+    if (!this.sessionId) {
+      throw new Error("Not connected to a session");
+    }
+
+    const args: GitCommitArgs = {
+      type: input.type as GitCommitArgs["type"],
+      description: input.description,
+      scope: input.scope,
+      body: input.body,
+      confidence: input.confidence,
+      decisionType: input.decision_type as GitCommitArgs["decisionType"],
+    };
+
+    // Build session context for commit
+    const context: CommitSessionContext = {
+      sessionId: this.sessionId,
+      agentId: this.participantId,
+      participants: [{ type: "ai", identifier: this.agentName }],
+      workingDirectory: this.workingDirectory || process.cwd(),
+    };
+
+    try {
+      const proposalMsg = this.gitCommitToolHandler.proposeCommit(args, context);
+
+      // Store the proposal for later execution
+      this.gitCommitProposals.set(proposalMsg.id, {
+        args,
+        context,
+        toolUseId,
+      });
+
+      // Track Claude's tool use ID
+      this.toolUseIdToProposalId.set(proposalMsg.id, toolUseId);
+
+      // Update batch with proposal ID
+      if (this.pendingToolBatch) {
+        const batchEntry = this.pendingToolBatch.tools.get(toolUseId);
+        if (batchEntry) {
+          batchEntry.proposalId = proposalMsg.id;
+        }
+      }
+
+      // Send the proposal
+      this.client.send(proposalMsg);
+
+      logger.info({
+        proposalId: proposalMsg.id,
+        toolUseId,
+        type: args.type,
+        description: args.description,
+      }, "Proposed git commit");
+
+      return proposalMsg.id;
+    } catch (error) {
+      logger.error({ error, type: input.type }, "Failed to propose git commit");
+      throw error;
+    }
+  }
+
+  /**
+   * Execute an approved git commit
+   */
+  private async executeGitCommit(proposalId: MessageId): Promise<void> {
+    if (!this.sessionId) return;
+
+    const proposal = this.gitCommitProposals.get(proposalId);
+    if (!proposal) {
+      logger.warn({ proposalId }, "Git commit proposal not found");
+      return;
+    }
+
+    const { args, context } = proposal;
+
+    logger.info({
+      proposalId,
+      type: args.type,
+      description: args.description,
+    }, "Executing approved git commit");
+
+    try {
+      let result: { success: boolean; output: string; error?: string } | null = null;
+
+      await this.gitCommitToolHandler.executeCommit(
+        proposalId,
+        args,
+        context,
+        (msg: AnyMessage) => {
+          this.client.send(msg);
+
+          // Capture tool.result message
+          if (msg.type === "tool.result") {
+            const payload = msg.payload as { success: boolean; result?: unknown; error?: string };
+            result = {
+              success: payload.success,
+              output: typeof payload.result === "string"
+                ? payload.result
+                : JSON.stringify(payload.result || {}),
+              error: payload.error,
+            };
+          }
+        }
+      );
+
+      // Clean up
+      this.gitCommitProposals.delete(proposalId);
+
+      // Update batch with result
+      if (result) {
+        this.updateBatchResult(proposalId, result);
+      }
+    } catch (error) {
+      logger.error({ error, proposalId }, "Git commit execution failed");
+      this.gitCommitProposals.delete(proposalId);
+
+      this.updateBatchResult(proposalId, {
+        success: false,
+        output: "",
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
     }
   }
 
@@ -1488,6 +1675,22 @@ export class ClaudeAgent {
           }
           logger.info({ path: input.path, toolUseId: toolUse.id }, "Claude requested file edit");
           await this.proposeFileEdit(input.path, input.old_text, input.new_text, input.occurrence || 0, toolUse.id);
+        } else if (toolUse.name === "git_commit") {
+          const input = toolUse.input as {
+            type: string;
+            description: string;
+            scope?: string;
+            body?: string;
+            confidence?: number;
+            decision_type?: string;
+          };
+          if (!input.type || !input.description) {
+            logger.error({ toolUseId: toolUse.id }, "Git commit input missing required fields");
+            this.markToolFailed(toolUse.id, "Missing type or description");
+            continue;
+          }
+          logger.info({ type: input.type, description: input.description, toolUseId: toolUse.id }, "Claude requested git commit");
+          await this.proposeGitCommit(input, toolUse.id);
         } else if (this.mcpManager.isMCPTool(toolUse.name)) {
           logger.info({ tool: toolUse.name, toolUseId: toolUse.id }, "Claude requested MCP tool execution");
           await this.proposeMCPTool(toolUse.name, toolUse.input as Record<string, unknown>, toolUse.id);

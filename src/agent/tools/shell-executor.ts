@@ -1,6 +1,6 @@
 import { spawn } from "bun";
 import type { Subprocess } from "bun";
-import { parse as parseShellArgs } from "shell-quote";
+import { parse as parseShellArgs, quote as quoteShellArgs } from "shell-quote";
 
 export type CommandCategory = "read" | "write" | "destructive" | "blocked";
 export type RiskLevel = "safe" | "low" | "medium" | "high" | "critical";
@@ -244,13 +244,17 @@ export async function executeShellCommand(
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
 
   try {
-    // Bun.spawn with safety controls
-    proc = spawn([shellCmd.command, ...shellCmd.args], {
+    // Build the full command string for shell execution
+    // We use sh -c to properly resolve commands via PATH (required on NixOS and similar systems)
+    const fullCommand = quoteShellArgs([shellCmd.command, ...shellCmd.args]);
+
+    // Bun.spawn with shell wrapper for PATH resolution
+    proc = spawn(["sh", "-c", fullCommand], {
       stdout: "pipe",
       stderr: "pipe",
       stdin: "ignore",
       cwd: shellCmd.cwd,
-      env: process.env, // Explicitly inherit environment for PATH resolution
+      env: process.env,
     });
 
     // Timeout enforcement
