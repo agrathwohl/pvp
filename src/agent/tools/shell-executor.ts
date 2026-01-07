@@ -246,6 +246,7 @@ export async function executeShellCommand(
       stderr: "pipe",
       stdin: "ignore",
       cwd: shellCmd.cwd,
+      env: process.env, // Explicitly inherit environment for PATH resolution
     });
 
     // Timeout enforcement

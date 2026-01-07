@@ -194,16 +194,11 @@ class PVPServer {
     }
   }
 
-  private async handleSessionCreate(
-    participantId: ParticipantId,
-    message: AnyMessage,
-  ): Promise<void> {
-    if (message.type !== "session.create") return;
-
-    const sessionId = message.session;
-    const { name, config } = message.payload;
-
-    // Create session working directory
+  /**
+   * Initialize session working directory with git repository.
+   * Shared helper used by both explicit creation and auto-creation.
+   */
+  private async initializeSessionDirectory(sessionId: SessionId): Promise<string> {
     const workingDirectory = path.join(this.config.git_dir, sessionId);
     await mkdir(workingDirectory, { recursive: true });
 
@@ -217,14 +212,37 @@ class PVPServer {
       logger.warn({ sessionId, workingDirectory, error }, "Failed to initialize git repository");
     }
 
-    // Create session with working directory
+    return workingDirectory;
+  }
+
+  /**
+   * Create and register a new session.
+   */
+  private createSession(
+    sessionId: SessionId,
+    name: string,
+    config: SessionConfig,
+    workingDirectory: string,
+  ): Session {
     const session = new Session(sessionId, name, config, workingDirectory);
     this.sessions.set(sessionId, session);
+    this.bridgeService.onSessionStart(sessionId, []);
+    return session;
+  }
+
+  private async handleSessionCreate(
+    participantId: ParticipantId,
+    message: AnyMessage,
+  ): Promise<void> {
+    if (message.type !== "session.create") return;
+
+    const sessionId = message.session;
+    const { name, config } = message.payload;
+
+    const workingDirectory = await this.initializeSessionDirectory(sessionId);
+    this.createSession(sessionId, name ?? "Unnamed session", config, workingDirectory);
 
     logger.info({ sessionId, name, workingDirectory, participantId }, "Session created");
-
-    // Notify bridge service of new session
-    this.bridgeService.onSessionStart(sessionId, []);
 
     // Broadcast session created
     this.transportServer.broadcast(message);
@@ -238,21 +256,9 @@ class PVPServer {
     sessionId: SessionId,
     participantId: ParticipantId,
   ): Promise<Session> {
-    // Create session working directory
-    const workingDirectory = path.join(this.config.git_dir, sessionId);
-    await mkdir(workingDirectory, { recursive: true });
+    const workingDirectory = await this.initializeSessionDirectory(sessionId);
 
-    // Initialize git repository with agent as committer
-    try {
-      execSync("git init", { cwd: workingDirectory, stdio: "pipe" });
-      execSync('git config user.name "PVP Agent"', { cwd: workingDirectory, stdio: "pipe" });
-      execSync('git config user.email "agent@pvp.session"', { cwd: workingDirectory, stdio: "pipe" });
-      logger.info({ sessionId, workingDirectory }, "Git repository initialized for auto-created session");
-    } catch (error) {
-      logger.warn({ sessionId, workingDirectory, error }, "Failed to initialize git repository");
-    }
-
-    // Create session with default config
+    // Default config for auto-created sessions
     const defaultConfig: SessionConfig = {
       require_approval_for: [],
       default_gate_quorum: { type: "any", count: 1 },
@@ -265,13 +271,9 @@ class PVPServer {
       heartbeat_interval_seconds: 30,
     };
 
-    const session = new Session(sessionId, `Auto-created session`, defaultConfig, workingDirectory);
-    this.sessions.set(sessionId, session);
+    const session = this.createSession(sessionId, "Auto-created session", defaultConfig, workingDirectory);
 
     logger.info({ sessionId, workingDirectory, participantId }, "Session auto-created on join");
-
-    // Notify bridge service of new session
-    this.bridgeService.onSessionStart(sessionId, []);
 
     return session;
   }
