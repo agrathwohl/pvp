@@ -7,6 +7,8 @@ import { ulid } from "../utils/ulid.js";
 import { logger } from "../utils/logger.js";
 import { createShellToolHandler } from "./tools/shell-tool.js";
 import { categorizeCommand } from "./tools/shell-executor.js";
+import { createFileToolHandler } from "./tools/file-tool.js";
+import { categorizeFilePath, isPathBlocked, type FileWriteCommand, type FileEditCommand } from "./tools/file-executor.js";
 import { MCPManager, type MCPServerConfig, type MCPToolDefinition } from "./mcp/index.js";
 import type {
   AnyMessage,
@@ -33,7 +35,10 @@ export class ClaudeAgent {
   private model: string;
   private conversationHistory: MessageParam[] = [];
   private shellToolHandler: ReturnType<typeof createShellToolHandler>;
+  private fileToolHandler: ReturnType<typeof createFileToolHandler>;
   private toolProposals: Map<MessageId, { command: ShellCommand; proposalMsg: AnyMessage }> = new Map();
+  private fileWriteProposals: Map<MessageId, { path: string; content: string; createDirs: boolean; toolUseId: string }> = new Map();
+  private fileEditProposals: Map<MessageId, { path: string; oldText: string; newText: string; occurrence: number; toolUseId: string }> = new Map();
   private toolUseIdToProposalId: Map<MessageId, string> = new Map();
   private currentPromptRef: MessageId | null = null;
 
@@ -73,6 +78,9 @@ export class ClaudeAgent {
 
     // Initialize shell tool handler
     this.shellToolHandler = createShellToolHandler();
+
+    // Initialize file tool handler
+    this.fileToolHandler = createFileToolHandler();
 
     // Initialize MCP manager
     this.mcpManager = new MCPManager();
@@ -348,6 +356,20 @@ export class ClaudeAgent {
       return;
     }
 
+    // Check if this is a file write proposal
+    if (this.fileWriteProposals.has(tool_proposal)) {
+      logger.info({ toolProposal: tool_proposal, approvers: approved_by }, "Executing approved file write");
+      await this.executeFileWrite(tool_proposal);
+      return;
+    }
+
+    // Check if this is a file edit proposal
+    if (this.fileEditProposals.has(tool_proposal)) {
+      logger.info({ toolProposal: tool_proposal, approvers: approved_by }, "Executing approved file edit");
+      await this.executeFileEdit(tool_proposal);
+      return;
+    }
+
     // Retrieve the shell tool proposal
     const proposal = this.toolProposals.get(tool_proposal);
     if (!proposal) {
@@ -463,6 +485,36 @@ export class ClaudeAgent {
         success: false,
         output: "",
         error: `Command rejected by human: ${reason}`,
+      });
+      return;
+    }
+
+    // Check if this is a file write proposal
+    const fileWriteProposal = this.fileWriteProposals.get(proposalId);
+    if (fileWriteProposal) {
+      // Clean up proposal tracking
+      this.fileWriteProposals.delete(proposalId);
+
+      // Update batch with rejection error
+      this.updateBatchResult(proposalId, {
+        success: false,
+        output: "",
+        error: `File write to "${fileWriteProposal.path}" rejected by human: ${reason}`,
+      });
+      return;
+    }
+
+    // Check if this is a file edit proposal
+    const fileEditProposal = this.fileEditProposals.get(proposalId);
+    if (fileEditProposal) {
+      // Clean up proposal tracking
+      this.fileEditProposals.delete(proposalId);
+
+      // Update batch with rejection error
+      this.updateBatchResult(proposalId, {
+        success: false,
+        output: "",
+        error: `File edit to "${fileEditProposal.path}" rejected by human: ${reason}`,
       });
       return;
     }
@@ -648,6 +700,58 @@ export class ClaudeAgent {
       }
     });
 
+    // Add file_write tool
+    tools.push({
+      name: "file_write",
+      description: "Write content to a file with safety controls. Files are categorized by risk based on path and type. System directories and sensitive files are blocked. Source code files require approval.",
+      input_schema: {
+        type: "object",
+        properties: {
+          path: {
+            type: "string",
+            description: "The file path to write to (absolute or relative to project root)"
+          },
+          content: {
+            type: "string",
+            description: "The content to write to the file"
+          },
+          create_dirs: {
+            type: "boolean",
+            description: "Whether to create parent directories if they don't exist (default: false)"
+          }
+        },
+        required: ["path", "content"]
+      }
+    });
+
+    // Add file_edit tool
+    tools.push({
+      name: "file_edit",
+      description: "Edit a file by replacing text. Finds occurrences of old_text and replaces with new_text. Use occurrence=0 to replace all, or specify which occurrence to replace.",
+      input_schema: {
+        type: "object",
+        properties: {
+          path: {
+            type: "string",
+            description: "The file path to edit (absolute or relative to project root)"
+          },
+          old_text: {
+            type: "string",
+            description: "The exact text to find and replace"
+          },
+          new_text: {
+            type: "string",
+            description: "The text to replace old_text with"
+          },
+          occurrence: {
+            type: "number",
+            description: "Which occurrence to replace: 0 = all occurrences, 1 = first, 2 = second, etc. (default: 0)"
+          }
+        },
+        required: ["path", "old_text", "new_text"]
+      }
+    });
+
     // Add MCP tools with namespaced names
     for (const mcpTool of this.mcpManager.getAllTools()) {
       tools.push({
@@ -707,6 +811,126 @@ export class ClaudeAgent {
       return proposalMsg.id;
     } catch (error) {
       logger.error({ error, command }, "Failed to propose shell command");
+      throw error;
+    }
+  }
+
+  /**
+   * Propose a file write operation through the PVP gate system
+   */
+  public async proposeFileWrite(
+    filePath: string,
+    content: string,
+    createDirs: boolean,
+    toolUseId: string
+  ): Promise<MessageId> {
+    if (!this.sessionId) {
+      throw new Error("Not connected to a session");
+    }
+
+    try {
+      const proposalMsg = this.fileToolHandler.proposeFileWrite(
+        filePath,
+        content,
+        createDirs,
+        this.sessionId,
+        this.participantId
+      );
+
+      // Store the proposal for later execution
+      this.fileWriteProposals.set(proposalMsg.id, {
+        path: filePath,
+        content,
+        createDirs,
+        toolUseId,
+      });
+
+      // Track Claude's tool use ID
+      this.toolUseIdToProposalId.set(proposalMsg.id, toolUseId);
+
+      // Update batch with proposal ID
+      if (this.pendingToolBatch) {
+        const batchEntry = this.pendingToolBatch.tools.get(toolUseId);
+        if (batchEntry) {
+          batchEntry.proposalId = proposalMsg.id;
+        }
+      }
+
+      // Send the proposal
+      this.client.send(proposalMsg);
+
+      logger.info({
+        proposalId: proposalMsg.id,
+        toolUseId,
+        path: filePath,
+        bytes: content.length,
+        createDirs,
+      }, "Proposed file write");
+
+      return proposalMsg.id;
+    } catch (error) {
+      logger.error({ error, path: filePath }, "Failed to propose file write");
+      throw error;
+    }
+  }
+
+  /**
+   * Propose a file edit operation through the PVP gate system
+   */
+  public async proposeFileEdit(
+    filePath: string,
+    oldText: string,
+    newText: string,
+    occurrence: number,
+    toolUseId: string
+  ): Promise<MessageId> {
+    if (!this.sessionId) {
+      throw new Error("Not connected to a session");
+    }
+
+    try {
+      const proposalMsg = this.fileToolHandler.proposeFileEdit(
+        filePath,
+        oldText,
+        newText,
+        occurrence,
+        this.sessionId,
+        this.participantId
+      );
+
+      // Store the proposal for later execution
+      this.fileEditProposals.set(proposalMsg.id, {
+        path: filePath,
+        oldText,
+        newText,
+        occurrence,
+        toolUseId,
+      });
+
+      // Track Claude's tool use ID
+      this.toolUseIdToProposalId.set(proposalMsg.id, toolUseId);
+
+      // Update batch with proposal ID
+      if (this.pendingToolBatch) {
+        const batchEntry = this.pendingToolBatch.tools.get(toolUseId);
+        if (batchEntry) {
+          batchEntry.proposalId = proposalMsg.id;
+        }
+      }
+
+      // Send the proposal
+      this.client.send(proposalMsg);
+
+      logger.info({
+        proposalId: proposalMsg.id,
+        toolUseId,
+        path: filePath,
+        occurrence,
+      }, "Proposed file edit");
+
+      return proposalMsg.id;
+    } catch (error) {
+      logger.error({ error, path: filePath }, "Failed to propose file edit");
       throw error;
     }
   }
@@ -775,6 +999,115 @@ export class ClaudeAgent {
     }, "Proposed MCP tool");
 
     return proposalMsg.id;
+  }
+
+  /**
+   * Execute an approved file write operation
+   */
+  private async executeFileWrite(proposalId: MessageId): Promise<void> {
+    if (!this.sessionId) return;
+
+    const proposal = this.fileWriteProposals.get(proposalId);
+    if (!proposal) {
+      logger.warn({ proposalId }, "File write proposal not found");
+      return;
+    }
+
+    const { path, content, createDirs } = proposal;
+
+    logger.info({
+      proposalId,
+      path,
+      bytes: content.length,
+    }, "Executing approved file write");
+
+    try {
+      const result = await this.fileToolHandler.executeFileWrite(
+        proposalId,
+        path,
+        content,
+        createDirs,
+        this.sessionId,
+        this.participantId,
+        (msg: AnyMessage) => this.client.send(msg)
+      );
+
+      // Clean up
+      this.fileWriteProposals.delete(proposalId);
+
+      // Update batch with result
+      this.updateBatchResult(proposalId, {
+        success: result.success,
+        output: result.success
+          ? `Wrote ${result.bytesWritten} bytes to ${result.path}`
+          : `Failed to write: ${result.error}`,
+        error: result.error,
+      });
+    } catch (error) {
+      logger.error({ error, proposalId, path }, "File write execution failed");
+      this.fileWriteProposals.delete(proposalId);
+
+      this.updateBatchResult(proposalId, {
+        success: false,
+        output: "",
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  }
+
+  /**
+   * Execute an approved file edit operation
+   */
+  private async executeFileEdit(proposalId: MessageId): Promise<void> {
+    if (!this.sessionId) return;
+
+    const proposal = this.fileEditProposals.get(proposalId);
+    if (!proposal) {
+      logger.warn({ proposalId }, "File edit proposal not found");
+      return;
+    }
+
+    const { path, oldText, newText, occurrence } = proposal;
+
+    logger.info({
+      proposalId,
+      path,
+      occurrence,
+    }, "Executing approved file edit");
+
+    try {
+      const result = await this.fileToolHandler.executeFileEdit(
+        proposalId,
+        path,
+        oldText,
+        newText,
+        occurrence,
+        this.sessionId,
+        this.participantId,
+        (msg: AnyMessage) => this.client.send(msg)
+      );
+
+      // Clean up
+      this.fileEditProposals.delete(proposalId);
+
+      // Update batch with result
+      this.updateBatchResult(proposalId, {
+        success: result.success,
+        output: result.success
+          ? `Replaced ${result.replacements} of ${result.matchCount} occurrences in ${result.path}`
+          : `Failed to edit: ${result.error}`,
+        error: result.error,
+      });
+    } catch (error) {
+      logger.error({ error, proposalId, path }, "File edit execution failed");
+      this.fileEditProposals.delete(proposalId);
+
+      this.updateBatchResult(proposalId, {
+        success: false,
+        output: "",
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
   }
 
   /**
@@ -1088,6 +1421,14 @@ export class ClaudeAgent {
         const input = toolUse.input as { command: string };
         logger.info({ command: input.command, toolUseId: toolUse.id }, "Claude requested shell command execution");
         await this.proposeShellCommand(input.command, toolUse.id);
+      } else if (toolUse.name === "file_write") {
+        const input = toolUse.input as { path: string; content: string; create_dirs?: boolean };
+        logger.info({ path: input.path, bytes: input.content.length, toolUseId: toolUse.id }, "Claude requested file write");
+        await this.proposeFileWrite(input.path, input.content, input.create_dirs || false, toolUse.id);
+      } else if (toolUse.name === "file_edit") {
+        const input = toolUse.input as { path: string; old_text: string; new_text: string; occurrence?: number };
+        logger.info({ path: input.path, toolUseId: toolUse.id }, "Claude requested file edit");
+        await this.proposeFileEdit(input.path, input.old_text, input.new_text, input.occurrence || 0, toolUse.id);
       } else if (this.mcpManager.isMCPTool(toolUse.name)) {
         logger.info({ tool: toolUse.name, toolUseId: toolUse.id }, "Claude requested MCP tool execution");
         await this.proposeMCPTool(toolUse.name, toolUse.input as Record<string, unknown>, toolUse.id);
@@ -1109,6 +1450,8 @@ export class ClaudeAgent {
 
     // Clear pending proposals
     this.toolProposals.clear();
+    this.fileWriteProposals.clear();
+    this.fileEditProposals.clear();
     this.mcpToolProposals.clear();
     this.toolUseIdToProposalId.clear();
 
