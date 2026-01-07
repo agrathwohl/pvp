@@ -2,6 +2,9 @@
 
 A **multiplayer, role-based coordination protocol** for human-AI collaborative development.
 
+[![npm version](https://img.shields.io/npm/v/pvp.svg)](https://www.npmjs.com/package/pvp)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 ## Overview
 
 PVP is NOT a chatbot. It's a coordination layer where multiple humans and AI agents collaborate in real-time to:
@@ -29,16 +32,66 @@ PVP is NOT a chatbot. It's a coordination layer where multiple humans and AI age
 
 ## Installation
 
-```bash
-# Install dependencies
-npm install
+### npm Package (Recommended)
 
-# Install Bun (required for agent component)
-curl -fsSL https://bun.sh/install | bash
+```bash
+# Install from npm
+npm install pvp
+
+# Or with yarn
+yarn add pvp
+
+# Or with pnpm
+pnpm add pvp
+```
+
+### From Source
+
+```bash
+# Clone and install dependencies
+git clone https://github.com/your-username/pvp.git
+cd pvp
+npm install
 
 # Build the project
 npm run build
 ```
+
+### Bun Runtime (Required for Agent)
+
+```bash
+# Install Bun (required for agent component)
+curl -fsSL https://bun.sh/install | bash
+```
+
+## Programmatic API
+
+```typescript
+import { startServer, startTUI } from "pvp";
+
+// Start server
+const server = await startServer({ port: 3000 });
+
+// Start TUI client
+await startTUI({
+  url: "ws://localhost:3000",
+  name: "Alice",
+  role: "driver"
+});
+```
+
+```typescript
+// Agent requires Bun runtime - import from submodule
+import { startAgent } from "pvp/agent";
+
+const agent = await startAgent({
+  url: "ws://localhost:3000",
+  session: "session-id",
+  apiKey: process.env.ANTHROPIC_API_KEY
+});
+```
+
+See [API Documentation](./docs/API.md) for complete reference.
 
 ## Runtime Requirements
 
@@ -467,6 +520,15 @@ This is an implementation of the PVP specification. Contributions should:
 2. Maintain type safety (TypeScript strict mode)
 3. Include tests for new features
 4. Use structured logging (pino)
+
+## Documentation
+
+- **[API Reference](./docs/API.md)** - Complete programmatic API documentation
+- **[Changelog](./CHANGELOG.md)** - Version history and release notes
+- **[Decision Tracking Architecture](./docs/DECISION_TRACKING_ARCHITECTURE.md)** - Full system design
+- **[Git Commit Protocol](./docs/GIT_COMMIT_PROTOCOL.md)** - Commit format specification
+- **[Git Hooks Guide](./src/git-hooks/README.md)** - Hook installation and usage
+- **[Testing Guide](./docs/TESTING.md)** - Test patterns and coverage
 
 ## License
 

@@ -1,15 +1,91 @@
 {
   "name": "pvp",
-  "version": "0.1.0",
+  "version": "0.1.1",
+  "description": "Pair Vibecoding Protocol - Multiplayer human-AI collaboration with approval gates and decision tracking",
   "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./protocol": {
+      "types": "./dist/protocol/index.d.ts",
+      "import": "./dist/protocol/index.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js"
+    },
+    "./agent": {
+      "types": "./dist/agent/index.d.ts",
+      "import": "./dist/agent/index.js"
+    },
+    "./tui": {
+      "types": "./dist/tui/index.d.ts",
+      "import": "./dist/tui/index.js"
+    },
+    "./transports": {
+      "types": "./dist/transports/index.d.ts",
+      "import": "./dist/transports/index.js"
+    },
+    "./git-hooks": {
+      "types": "./dist/git-hooks/bridge/index.d.ts",
+      "import": "./dist/git-hooks/bridge/index.js"
+    }
+  },
+  "bin": {
+    "pvp": "./bin/pvp.js",
+    "pvp-server": "./bin/pvp-server.js",
+    "pvp-tui": "./bin/pvp-tui.js",
+    "pvp-agent": "./bin/pvp-agent.js"
+  },
+  "files": [
+    "dist",
+    "bin",
+    "src/git-hooks/hooks",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run clean && npm run build && npm run test",
     "server": "tsx src/server/index.ts",
     "tui": "tsx src/tui/index.ts",
     "agent": "bun run src/agent/index.ts",
     "dev": "tsx watch src/server/index.ts",
-    "test": "vitest",
+    "test": "vitest run",
     "deploy": "ssh -i ~/.pem/LightsailDefaultKey-us-east-2.pem ubuntu@3.128.173.51 'cd ~/pvp && git pull && ~/.bun/bin/bun install && pm2 restart pvp-server'"
+  },
+  "keywords": [
+    "ai",
+    "llm",
+    "claude",
+    "anthropic",
+    "pair-programming",
+    "collaboration",
+    "multiplayer",
+    "approval-gates",
+    "decision-tracking",
+    "git-hooks",
+    "mcp",
+    "tui"
+  ],
+  "author": "gwohl",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gwohl/pvp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/gwohl/pvp/issues"
+  },
+  "homepage": "https://github.com/gwohl/pvp#readme",
+  "engines": {
+    "node": ">=18.0.0"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",

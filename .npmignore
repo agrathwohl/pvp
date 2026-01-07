@@ -1,0 +1,44 @@
+# Source files (we ship dist/)
+src/
+
+# Tests
+tests/
+*.test.ts
+*.spec.ts
+vitest.config.ts
+coverage/
+
+# Development files
+.git/
+.gitignore
+.env*
+.claude*
+.hive*
+claudedocs/
+
+# Config files not needed in package
+tsconfig.json
+.prettierrc
+.eslintrc*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.log
+*.tsbuildinfo
+
+# Examples (keep in repo, not in package)
+examples/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
