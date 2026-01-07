@@ -1,5 +1,6 @@
 import { spawn } from "bun";
 import type { Subprocess } from "bun";
+import { parse as parseShellArgs } from "shell-quote";
 
 export type CommandCategory = "read" | "write" | "destructive" | "blocked";
 export type RiskLevel = "safe" | "low" | "medium" | "high" | "critical";
@@ -118,8 +119,11 @@ const COMMAND_PATTERNS: CommandPattern[] = [
  * Analyzes a command and categorizes it by risk level
  */
 export function categorizeCommand(command: string): ShellCommand {
-  const parts = command.trim().split(/\s+/);
-  const cmd = parts[0];
+  // Use shell-quote to properly parse command respecting quotes
+  const parsed = parseShellArgs(command.trim());
+  // Filter to only string args (shell-quote can return operator objects for things like |, &&)
+  const parts = parsed.filter((p): p is string => typeof p === "string");
+  const cmd = parts[0] || "";
   const args = parts.slice(1);
 
   // Check against all patterns (most restrictive first)
