@@ -59,7 +59,7 @@
     "agent": "bun run src/agent/index.ts",
     "dev": "tsx watch src/server/index.ts",
     "test": "vitest run",
-    "deploy": "ssh -i ~/.pem/LightsailDefaultKey-us-east-2.pem ubuntu@3.128.173.51 'cd ~/pvp && git pull && ~/.bun/bin/bun install && pm2 restart pvp-server'"
+    "deploy": "ssh -i ~/.pem/LightsailDefaultKey-us-east-2.pem ubuntu@3.128.173.51 'cd ~/pvp && git pull && ~/.bun/bin/bun install --ignore-scripts && ./node_modules/.bin/tsc && pm2 restart pvp-server'"
   },
   "keywords": [
     "ai",
