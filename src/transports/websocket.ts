@@ -1,5 +1,6 @@
 import WebSocket, { WebSocketServer } from "ws";
 import { EventEmitter } from "events";
+import { createServer, type Server as HttpServer, type IncomingMessage, type ServerResponse } from "http";
 import { createLogger } from "../utils/logger.js";
 import { serializeMessage, deserializeMessage } from "../protocol/messages.js";
 import type { Transport, TransportServer } from "./base.js";
@@ -68,14 +69,25 @@ export class WebSocketTransport extends EventEmitter implements Transport {
   }
 }
 
+export interface BridgeProxyConfig {
+  bridgeHost: string;
+  bridgePort: number;
+}
+
 export class WebSocketTransportServer extends EventEmitter implements TransportServer {
+  private httpServer: HttpServer;
   private wss: WebSocketServer;
   private transports: Map<ParticipantId, WebSocketTransport> = new Map();
+  private bridgeProxy: BridgeProxyConfig | null = null;
 
   constructor(port: number, host: string = "0.0.0.0") {
     super();
 
-    this.wss = new WebSocketServer({ port, host });
+    // Create HTTP server to handle both WebSocket upgrades and bridge API proxy
+    this.httpServer = createServer((req, res) => this.handleHttpRequest(req, res));
+
+    // Attach WebSocket server to HTTP server
+    this.wss = new WebSocketServer({ server: this.httpServer });
 
     this.wss.on("connection", (ws: WebSocket) => {
       logger.info("New WebSocket connection");
@@ -112,7 +124,102 @@ export class WebSocketTransportServer extends EventEmitter implements TransportS
       ws.on("message", onFirstMessage);
     });
 
-    logger.info({ port, host }, "WebSocket server started");
+    // Start HTTP server (which includes WebSocket)
+    this.httpServer.listen(port, host, () => {
+      logger.info({ port, host }, "WebSocket server started");
+    });
+  }
+
+  /**
+   * Configure bridge API proxy to forward /bridge/* requests to the local bridge service
+   */
+  setBridgeProxy(config: BridgeProxyConfig): void {
+    this.bridgeProxy = config;
+    logger.info({ bridgeHost: config.bridgeHost, bridgePort: config.bridgePort }, "Bridge proxy configured");
+  }
+
+  /**
+   * Handle HTTP requests - proxy /bridge/* to bridge service, return 404 for others
+   */
+  private handleHttpRequest(req: IncomingMessage, res: ServerResponse): void {
+    const url = req.url || "/";
+
+    // Handle CORS preflight
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+      });
+      res.end();
+      return;
+    }
+
+    // Proxy /bridge/* requests to bridge service
+    if (url.startsWith("/bridge/")) {
+      this.proxyToBridge(req, res, url.slice(7)); // Remove "/bridge" prefix
+      return;
+    }
+
+    // Health check endpoint
+    if (url === "/health") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "ok", bridge_proxy: !!this.bridgeProxy }));
+      return;
+    }
+
+    // Default: 404 for non-WebSocket HTTP requests
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Not found" }));
+  }
+
+  /**
+   * Proxy request to local bridge service
+   */
+  private proxyToBridge(req: IncomingMessage, res: ServerResponse, path: string): void {
+    if (!this.bridgeProxy) {
+      res.writeHead(503, {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+      });
+      res.end(JSON.stringify({ error: "Bridge proxy not configured" }));
+      return;
+    }
+
+    const { bridgeHost, bridgePort } = this.bridgeProxy;
+    const targetUrl = `http://${bridgeHost}:${bridgePort}${path}`;
+
+    // Use native http to proxy the request
+    import("http").then(({ request }) => {
+      const proxyReq = request(
+        targetUrl,
+        {
+          method: req.method,
+          headers: {
+            ...req.headers,
+            host: `${bridgeHost}:${bridgePort}`,
+          },
+        },
+        (proxyRes) => {
+          res.writeHead(proxyRes.statusCode || 500, {
+            ...proxyRes.headers,
+            "Access-Control-Allow-Origin": "*",
+          });
+          proxyRes.pipe(res);
+        }
+      );
+
+      proxyReq.on("error", (err) => {
+        logger.error({ error: err, path }, "Bridge proxy error");
+        res.writeHead(502, {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        });
+        res.end(JSON.stringify({ error: "Bridge service unavailable" }));
+      });
+
+      req.pipe(proxyReq);
+    });
   }
 
   onConnection(handler: (transport: Transport) => void): void {
@@ -139,6 +246,7 @@ export class WebSocketTransportServer extends EventEmitter implements TransportS
     }
     this.transports.clear();
     this.wss.close();
+    this.httpServer.close();
     logger.info("WebSocket server closed");
   }
 }

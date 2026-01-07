@@ -1,4 +1,4 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect } from "vitest";
 import { categorizeCommand, isCommandBlocked, getDefaultConfig } from "../src/agent/tools/shell-executor.js";
 
 describe("Shell Command Categorization", () => {

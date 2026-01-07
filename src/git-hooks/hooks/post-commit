@@ -1,0 +1,165 @@
+#!/bin/sh
+# PVP Git Hook: post-commit
+# Stores extended metadata in git-notes and updates PVP session
+# POSIX-compliant for maximum portability
+
+set -e
+
+# Configuration
+PVP_SOCKET="${PVP_GIT_SOCKET:-/tmp/pvp-git-bridge.sock}"
+PVP_STATE_FILE="${PVP_STATE_FILE:-$HOME/.pvp/current-session.json}"
+PVP_NOTES_REF="${PVP_NOTES_REF:-refs/notes/pvp}"
+PVP_MARKER="PVP-META"
+
+# Get the commit that was just made
+COMMIT_SHA=$(git rev-parse HEAD)
+COMMIT_MSG=$(git log -1 --format=%B "$COMMIT_SHA")
+
+# Check if this commit has PVP metadata
+has_pvp_metadata() {
+    echo "$COMMIT_MSG" | grep -q "^$PVP_MARKER:" 2>/dev/null
+}
+
+# Function to notify PVP bridge service via socket
+notify_pvp_socket() {
+    commit_sha="$1"
+    if [ -S "$PVP_SOCKET" ]; then
+        payload="{\"action\":\"commit_created\",\"commit_sha\":\"$commit_sha\",\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
+        echo "$payload" | nc -U "$PVP_SOCKET" 2>/dev/null || true
+        return 0
+    fi
+    return 1
+}
+
+# Function to notify via HTTP API
+notify_pvp_http() {
+    commit_sha="$1"
+    pvp_port="${PVP_GIT_PORT:-9847}"
+    timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    if command -v curl >/dev/null 2>&1; then
+        curl -s --connect-timeout 1 -X POST \
+            -H "Content-Type: application/json" \
+            -d "{\"commit_sha\":\"$commit_sha\",\"timestamp\":\"$timestamp\"}" \
+            "http://localhost:$pvp_port/commit-created" 2>/dev/null || true
+        return 0
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO- --timeout=1 --post-data="{\"commit_sha\":\"$commit_sha\",\"timestamp\":\"$timestamp\"}" \
+            --header="Content-Type: application/json" \
+            "http://localhost:$pvp_port/commit-created" 2>/dev/null || true
+        return 0
+    fi
+    return 1
+}
+
+# Function to update state file
+update_state_file() {
+    commit_sha="$1"
+    if [ -f "$PVP_STATE_FILE" ]; then
+        # Create temp file with updated last_commit
+        temp_file=$(mktemp)
+        sed "s/\"last_commit\"[[:space:]]*:[[:space:]]*\"[^\"]*\"/\"last_commit\": \"$commit_sha\"/" \
+            "$PVP_STATE_FILE" > "$temp_file"
+        mv "$temp_file" "$PVP_STATE_FILE"
+    fi
+}
+
+# Extract extended metadata from PVP session for git-notes
+get_extended_metadata() {
+    if [ -S "$PVP_SOCKET" ]; then
+        response=$(echo '{"action":"get_extended_metadata"}' | nc -U "$PVP_SOCKET" 2>/dev/null) || return 1
+        echo "$response"
+        return 0
+    fi
+
+    # Fallback to state file
+    if [ -f "$PVP_STATE_FILE" ]; then
+        cat "$PVP_STATE_FILE"
+        return 0
+    fi
+
+    return 1
+}
+
+# Store extended metadata in git-notes
+store_git_notes() {
+    commit_sha="$1"
+    metadata="$2"
+
+    if [ -n "$metadata" ]; then
+        # Initialize notes ref if needed
+        git notes --ref="$PVP_NOTES_REF" add -f -m "$metadata" "$commit_sha" 2>/dev/null || {
+            # If notes ref doesn't exist, create it
+            git notes --ref="$PVP_NOTES_REF" add -m "$metadata" "$commit_sha" 2>/dev/null || true
+        }
+    fi
+}
+
+# Trigger configured webhooks
+trigger_webhooks() {
+    commit_sha="$1"
+
+    # Check for webhook config
+    if [ -f ".pvp-git.config.json" ]; then
+        webhooks=$(sed -n 's/.*"webhooks"[[:space:]]*:[[:space:]]*\[\([^]]*\)\].*/\1/p' ".pvp-git.config.json")
+
+        if [ -n "$webhooks" ]; then
+            # Parse webhooks (simple format: ["url1", "url2"])
+            echo "$webhooks" | tr ',' '\n' | sed 's/[[:space:]]*"//g' | while read -r url; do
+                if [ -n "$url" ]; then
+                    # Async webhook trigger
+                    if command -v curl >/dev/null 2>&1; then
+                        (curl -s --connect-timeout 5 -X POST \
+                            -H "Content-Type: application/json" \
+                            -d "{\"event\":\"commit\",\"commit_sha\":\"$commit_sha\",\"repository\":\"$(git remote get-url origin 2>/dev/null || echo 'local')\"}" \
+                            "$url" >/dev/null 2>&1 &) || true
+                    fi
+                fi
+            done
+        fi
+    fi
+}
+
+# Main logic
+main() {
+    # Get extended metadata from PVP session
+    extended_meta=$(get_extended_metadata) || extended_meta=""
+
+    # Build comprehensive note
+    note_content=""
+
+    # If we have PVP metadata in commit, store extended info
+    if has_pvp_metadata; then
+        timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+        note_content="PVP Extended Metadata
+====================
+Commit: $COMMIT_SHA
+Timestamp: $timestamp
+"
+
+        if [ -n "$extended_meta" ]; then
+            note_content="$note_content
+Session Data:
+$extended_meta
+"
+        fi
+
+        # Add file change summary
+        changed_files=$(git diff-tree --no-commit-id --name-only -r "$COMMIT_SHA" 2>/dev/null | wc -l)
+        note_content="$note_content
+Files Changed: $changed_files
+"
+
+        # Store in git-notes
+        store_git_notes "$COMMIT_SHA" "$note_content"
+    fi
+
+    # Notify PVP service about the commit
+    notify_pvp_socket "$COMMIT_SHA" || notify_pvp_http "$COMMIT_SHA" || update_state_file "$COMMIT_SHA"
+
+    # Trigger webhooks if configured
+    trigger_webhooks "$COMMIT_SHA"
+}
+
+main "$@"

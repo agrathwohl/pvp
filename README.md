@@ -25,6 +25,7 @@ PVP is NOT a chatbot. It's a coordination layer where multiple humans and AI age
 - ✅ WebSocket transport with reconnection
 - ✅ Terminal UI (TUI) client
 - ✅ Structured logging and monitoring
+- ✅ **Decision tracking** - Git-based audit trail with automatic commit metadata
 
 ## Installation
 
@@ -120,6 +121,80 @@ npm run agent -- \
                          │  - Forks        │
                          └─────────────────┘
 ```
+
+## Decision Tracking
+
+PVP includes an integrated **git decision tracking system** that automatically captures session context and embeds it into git commits.
+
+### How It Works
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│   PVP Server    │────▶│  Bridge Service │────▶│   Git Hooks     │
+│                 │     │  (port 9847)    │     │                 │
+│  • Messages     │     │  • State mgmt   │     │  • Trailers     │
+│  • Approvals    │     │  • HTTP API     │     │  • Git notes    │
+│  • Tool exec    │     │  • Webhooks     │     │  • Validation   │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
+```
+
+### Components
+
+1. **Bridge Service** - Local daemon that maintains session state
+   - Starts automatically with the PVP server
+   - HTTP API at `http://localhost:9847`
+   - Unix socket at `/tmp/pvp-git-bridge.sock`
+
+2. **TUI Integration** - Real-time decision tracking display
+   - Shows messages, prompts, approvals since last commit
+   - Displays tool execution summary
+   - Polls bridge service every 5 seconds
+
+3. **Git Hooks** - Automatic commit metadata injection
+   - `prepare-commit-msg` - Injects PVP trailers
+   - `post-commit` - Stores extended metadata in git-notes
+   - `pre-push` - Validates PVP metadata coverage
+
+### TUI Decision Display
+
+When connected, the TUI shows a decision tracking panel:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ 📊 Decision Tracking | Msgs: 15 | Prompts: 3 | Approvals: 2   │
+│ Tools: shell_execute, file_write | Last: a1b2c3d              │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Commit Message Format
+
+Commits include PVP trailers:
+
+```
+feat(auth): implement JWT validation [pvp:msg-01]
+
+Added JWT token validation middleware.
+
+PVP-Session: ses_01HX7K9P4QZCVD3N8MYW6R5T2B
+PVP-Messages: msg-01,msg-03,msg-05
+PVP-Confidence: 0.85
+Decision-By: human:alice,ai:claude
+```
+
+### API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/commit-context` | GET | Current session metrics |
+| `/extended-metadata` | GET | Full session metadata |
+| `/status` | GET | Bridge service status |
+| `/health` | GET | Health check |
+
+### Documentation
+
+- [Architecture Guide](./docs/DECISION_TRACKING_ARCHITECTURE.md) - Full system design
+- [Git Commit Protocol](./docs/GIT_COMMIT_PROTOCOL.md) - Commit format specification
+- [Git Hooks README](./src/git-hooks/README.md) - Hook installation and usage
 
 ## Core Concepts
 
@@ -372,8 +447,9 @@ pm2 start dist/server/index.js --name pvp-server
 
 ## Roadmap
 
-- [ ] Unit tests (protocol, session, gates)
-- [ ] Integration tests (complete flow)
+- [x] Unit tests (protocol, session, gates, decision tracking)
+- [x] Integration tests (MCP server integration)
+- [x] Decision tracking system (git-based audit trail)
 - [ ] T.140 audio transport integration
 - [ ] MCP transport support
 - [ ] Agent adapters (Claude, OpenAI, etc.)
@@ -381,6 +457,7 @@ pm2 start dist/server/index.js --name pvp-server
 - [ ] Message replay functionality
 - [ ] Web UI client
 - [ ] Enhanced fork/merge workflows
+- [ ] Decision tree visualization
 
 ## Contributing
 

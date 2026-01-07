@@ -37,12 +37,23 @@ export interface ToolOutput {
   };
 }
 
+export interface DecisionTrackingState {
+  bridgeConnected: boolean;
+  messagesSinceLastCommit: number;
+  promptsCount: number;
+  approvalsCount: number;
+  toolExecutions: string;
+  decisionSummary: string | null;
+  lastCommit: string | null;
+}
+
 export interface TUIState {
   // Connection
   connected: boolean;
   sessionId: SessionId | null;
   participantId: ParticipantId | null;
   client: WebSocketClient | null;
+  bridgeBaseUrl: string | null;
 
   // Session data
   participants: Map<ParticipantId, ParticipantState>;
@@ -53,6 +64,9 @@ export interface TUIState {
   // Tool execution
   toolProposals: Map<MessageId, ToolProposal>;
   toolOutputs: Map<MessageId, ToolOutput>;
+
+  // Decision tracking
+  decisionTracking: DecisionTrackingState;
 
   // UI state
   mode: TUIMode;
@@ -77,6 +91,7 @@ export interface TUIState {
   raiseInterrupt: (urgency: InterruptUrgency, message: string, targetAgent?: ParticipantId) => void;
   toggleThinking: () => void;
   setError: (error: string | null) => void;
+  fetchDecisionTracking: () => Promise<void>;
 }
 
 export const useTUIStore = create<TUIState>((set, get) => ({
@@ -85,12 +100,22 @@ export const useTUIStore = create<TUIState>((set, get) => ({
   sessionId: null,
   participantId: null,
   client: null,
+  bridgeBaseUrl: null,
   participants: new Map(),
   messages: [],
   context: new Map(),
   pendingGates: new Map(),
   toolProposals: new Map(),
   toolOutputs: new Map(),
+  decisionTracking: {
+    bridgeConnected: false,
+    messagesSinceLastCommit: 0,
+    promptsCount: 0,
+    approvalsCount: 0,
+    toolExecutions: "",
+    decisionSummary: null,
+    lastCommit: null,
+  },
   mode: "stream",
   draftPrompt: "",
   currentThinking: "",
@@ -103,8 +128,16 @@ export const useTUIStore = create<TUIState>((set, get) => ({
   connect: (url, sessionId, participantId, name, role, isCreator) => {
     const client = new WebSocketClient(url, participantId);
 
+    // Derive bridge URL from server URL
+    // ws://host:port -> http://host:port/bridge
+    // wss://host:port -> https://host:port/bridge
+    const bridgeBaseUrl = url
+      .replace(/^ws:/, "http:")
+      .replace(/^wss:/, "https:")
+      .replace(/\/$/, "") + "/bridge";
+
     client.on("connected", () => {
-      set({ connected: true, participantId, sessionId, client });
+      set({ connected: true, participantId, sessionId, client, bridgeBaseUrl });
 
       // Join or create session
       if (isCreator) {
@@ -394,6 +427,7 @@ export const useTUIStore = create<TUIState>((set, get) => ({
       client: null,
       sessionId: null,
       participantId: null,
+      bridgeBaseUrl: null,
       participants: new Map(),
       messages: [],
       context: new Map(),
@@ -508,5 +542,39 @@ export const useTUIStore = create<TUIState>((set, get) => ({
 
   setError: (error) => {
     set({ error });
+  },
+
+  fetchDecisionTracking: async () => {
+    const { bridgeBaseUrl } = get();
+    if (!bridgeBaseUrl) {
+      // Not connected yet, skip
+      return;
+    }
+
+    try {
+      const response = await fetch(`${bridgeBaseUrl}/commit-context`);
+      if (response.ok) {
+        const data = await response.json();
+        set({
+          decisionTracking: {
+            bridgeConnected: true,
+            messagesSinceLastCommit: data.messages_since_last_commit || 0,
+            promptsCount: data.prompts_count || 0,
+            approvalsCount: data.approvals_count || 0,
+            toolExecutions: data.tool_executions || "",
+            decisionSummary: data.decision_summary || null,
+            lastCommit: data.last_commit || null,
+          },
+        });
+      } else {
+        set((state) => ({
+          decisionTracking: { ...state.decisionTracking, bridgeConnected: false },
+        }));
+      }
+    } catch {
+      set((state) => ({
+        decisionTracking: { ...state.decisionTracking, bridgeConnected: false },
+      }));
+    }
   },
 }));

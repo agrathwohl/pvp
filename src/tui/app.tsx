@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { Box, Text, useInput, useApp } from "ink";
 import { useTUIStore } from "./store.js";
 import type { ParticipantId } from "../protocol/types.js";
@@ -26,6 +26,7 @@ export function App({
     pendingGates,
     toolProposals,
     toolOutputs,
+    decisionTracking,
     mode,
     draftPrompt,
     currentThinking,
@@ -42,6 +43,7 @@ export function App({
     rejectAllGates,
     setMode,
     toggleThinking,
+    fetchDecisionTracking,
   } = useTUIStore();
 
   const [targetAgent, setTargetAgent] = useState<ParticipantId>("");
@@ -61,6 +63,21 @@ export function App({
       disconnect();
     };
   }, [serverUrl, sessionId, participantId, participantName, role, isCreator]);
+
+  // Poll decision tracking state from bridge service
+  useEffect(() => {
+    if (!connected) return;
+
+    // Initial fetch
+    fetchDecisionTracking();
+
+    // Poll every 5 seconds
+    const interval = setInterval(() => {
+      fetchDecisionTracking();
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [connected, fetchDecisionTracking]);
 
   useInput((input, key) => {
     if (key.ctrl && input === "c") {
@@ -136,6 +153,33 @@ export function App({
           | Participants: {participants.size} | Gates: {pendingGates.size}
         </Text>
       </Box>
+
+      {/* Decision Tracking Status */}
+      {decisionTracking.bridgeConnected && (
+        <Box borderStyle="round" borderColor="cyan" paddingX={1}>
+          <Text>
+            <Text color="cyan">📊 Decision Tracking</Text>
+            {" | "}
+            Msgs: {decisionTracking.messagesSinceLastCommit}
+            {" | "}
+            Prompts: {decisionTracking.promptsCount}
+            {" | "}
+            Approvals: {decisionTracking.approvalsCount}
+            {decisionTracking.toolExecutions && (
+              <>
+                {" | "}
+                Tools: {decisionTracking.toolExecutions}
+              </>
+            )}
+            {decisionTracking.lastCommit && (
+              <>
+                {" | "}
+                <Text dimColor>Last: {decisionTracking.lastCommit.slice(0, 7)}</Text>
+              </>
+            )}
+          </Text>
+        </Box>
+      )}
 
       {/* Message Stream */}
       <Box flexDirection="column" flexGrow={1} paddingX={1} paddingY={1}>

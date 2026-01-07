@@ -6,6 +6,8 @@ import { MessageRouter } from "./router.js";
 import { createMessage } from "../protocol/messages.js";
 import { createLogger } from "../utils/logger.js";
 import { mergeServerConfig, type ServerConfig } from "../config/server-config.js";
+import { PvpGitBridgeService } from "../git-hooks/bridge/bridge-service.js";
+import type { ParticipantInfo } from "../git-hooks/bridge/types.js";
 import type {
   SessionId,
   SessionConfig,
@@ -21,11 +23,25 @@ class PVPServer {
   private router: MessageRouter;
   private heartbeatIntervals: Map<ParticipantId, NodeJS.Timeout> = new Map();
   private config: ServerConfig;
+  private bridgeService: PvpGitBridgeService;
 
   constructor(config: ServerConfig) {
     this.config = config;
     this.transportServer = new WebSocketTransportServer(config.port, config.host);
     this.router = new MessageRouter();
+    this.bridgeService = new PvpGitBridgeService();
+
+    // Configure bridge API proxy through HTTP server
+    // This allows remote TUI clients to access bridge via wss://server:port/bridge/*
+    this.transportServer.setBridgeProxy({
+      bridgeHost: "127.0.0.1",
+      bridgePort: 9847,
+    });
+
+    // Start the git bridge service for decision tracking
+    this.bridgeService.start().catch((err) => {
+      logger.warn({ error: err.message }, "Git bridge service failed to start (non-fatal)");
+    });
 
     this.transportServer.onConnection((transport) => {
       logger.info(
@@ -85,9 +101,19 @@ class PVPServer {
 
       await this.router.route(session, message, broadcast);
 
+      // Forward message to bridge service for decision tracking
+      this.bridgeService.onMessage(message);
+
       // Start heartbeat monitoring for new participants
       if (message.type === "session.join") {
         this.startHeartbeatMonitoring(session, participantId);
+        // Update bridge with new participant
+        this.updateBridgeParticipants(session);
+      }
+
+      // Handle participant leaving
+      if (message.type === "session.leave") {
+        this.updateBridgeParticipants(session);
       }
     } catch (error) {
       logger.error(
@@ -120,6 +146,9 @@ class PVPServer {
     this.sessions.set(sessionId, session);
 
     logger.info({ sessionId, name, participantId }, "Session created");
+
+    // Notify bridge service of new session
+    this.bridgeService.onSessionStart(sessionId, []);
 
     // Broadcast session created
     this.transportServer.broadcast(message);
@@ -240,6 +269,25 @@ class PVPServer {
   }
 
   /**
+   * Update bridge service with current session participants
+   */
+  private updateBridgeParticipants(session: Session): void {
+    const participants = session.getParticipants();
+    const participantInfos: ParticipantInfo[] = [];
+
+    for (const [id, state] of participants) {
+      participantInfos.push({
+        id,
+        name: state.info.name,
+        type: state.info.type,
+        role: state.info.roles?.[0] || "participant",
+      });
+    }
+
+    this.bridgeService.updateParticipants(participantInfos);
+  }
+
+  /**
    * Get the configured git directory for repository creation
    */
   getGitDir(): string {
@@ -265,9 +313,14 @@ class PVPServer {
     // Close transport server
     this.transportServer.close();
 
-    // End all sessions
+    // End all sessions and notify bridge service
     for (const session of this.sessions.values()) {
-      const endMsg = createMessage("session.end", session.getId(), "system", {
+      const sessionId = session.getId();
+
+      // Notify bridge service of session end
+      this.bridgeService.onSessionEnd(sessionId);
+
+      const endMsg = createMessage("session.end", sessionId, "system", {
         reason: "Server shutdown",
         final_state: "aborted",
       });
@@ -275,6 +328,11 @@ class PVPServer {
     }
 
     this.sessions.clear();
+
+    // Stop bridge service
+    this.bridgeService.stop().catch((err) => {
+      logger.warn({ error: err.message }, "Error stopping bridge service");
+    });
   }
 }
 

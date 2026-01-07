@@ -1,0 +1,133 @@
+#!/bin/sh
+# PVP Git Hook: pre-push
+# Validates all commits have PVP metadata and decision trails are complete
+# POSIX-compliant for maximum portability
+
+set -e
+
+# Configuration
+PVP_MARKER="PVP-META"
+PVP_ENFORCE="${PVP_ENFORCE_METADATA:-false}"
+PVP_WARN_ONLY="${PVP_WARN_ONLY:-true}"
+PVP_CONFIG_FILE="${PVP_CONFIG_FILE:-.pvp-git.config.json}"
+
+# Read from stdin: <local ref> <local sha> <remote ref> <remote sha>
+while read -r local_ref local_sha remote_ref remote_sha; do
+    # Skip deletion
+    if [ "$local_sha" = "0000000000000000000000000000000000000000" ]; then
+        continue
+    fi
+
+    # Determine range of commits being pushed
+    if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
+        # New branch - check all commits not reachable from any remote ref
+        range="$local_sha --not --remotes"
+    else
+        range="$remote_sha..$local_sha"
+    fi
+
+    # Load configuration if exists
+    enforce_metadata="$PVP_ENFORCE"
+    warn_only="$PVP_WARN_ONLY"
+    min_coverage="0"
+
+    if [ -f "$PVP_CONFIG_FILE" ]; then
+        # Parse config
+        enforce_cfg=$(sed -n 's/.*"enforce_metadata"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p' "$PVP_CONFIG_FILE" | head -1)
+        warn_cfg=$(sed -n 's/.*"warn_only"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p' "$PVP_CONFIG_FILE" | head -1)
+        min_cov=$(sed -n 's/.*"min_pvp_coverage"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' "$PVP_CONFIG_FILE" | head -1)
+
+        [ -n "$enforce_cfg" ] && enforce_metadata="$enforce_cfg"
+        [ -n "$warn_cfg" ] && warn_only="$warn_cfg"
+        [ -n "$min_cov" ] && min_coverage="$min_cov"
+    fi
+
+    # Count commits
+    total_commits=0
+    pvp_commits=0
+    missing_commits=""
+
+    for commit in $(git rev-list $range 2>/dev/null); do
+        total_commits=$((total_commits + 1))
+        commit_msg=$(git log -1 --format=%B "$commit")
+
+        if echo "$commit_msg" | grep -q "^$PVP_MARKER:"; then
+            pvp_commits=$((pvp_commits + 1))
+        else
+            short_sha=$(git rev-parse --short "$commit")
+            subject=$(git log -1 --format=%s "$commit" | head -c 50)
+            missing_commits="$missing_commits
+  - $short_sha: $subject"
+        fi
+    done
+
+    # Skip if no commits
+    [ "$total_commits" -eq 0 ] && continue
+
+    # Calculate coverage
+    if [ "$total_commits" -gt 0 ]; then
+        coverage=$((pvp_commits * 100 / total_commits))
+    else
+        coverage=100
+    fi
+
+    # Report status
+    echo ""
+    echo "PVP Pre-Push Check"
+    echo "=================="
+    echo "Commits with PVP metadata: $pvp_commits/$total_commits ($coverage%)"
+
+    if [ -n "$missing_commits" ]; then
+        echo ""
+        echo "Commits missing PVP metadata:$missing_commits"
+    fi
+
+    # Enforcement logic
+    if [ "$enforce_metadata" = "true" ]; then
+        if [ "$coverage" -lt "$min_coverage" ]; then
+            echo ""
+            echo "ERROR: PVP metadata coverage ($coverage%) is below minimum ($min_coverage%)"
+
+            if [ "$warn_only" = "true" ]; then
+                echo "WARNING: Push allowed (warn_only mode)"
+            else
+                echo ""
+                echo "Push rejected. To bypass, set PVP_ENFORCE_METADATA=false"
+                echo "Or add PVP metadata to commits using:"
+                echo "  git commit --amend"
+                echo ""
+                exit 1
+            fi
+        fi
+    fi
+
+    # Validate decision trail completeness for PVP commits
+    if [ "$pvp_commits" -gt 0 ]; then
+        incomplete=0
+
+        for commit in $(git rev-list $range 2>/dev/null); do
+            commit_msg=$(git log -1 --format=%B "$commit")
+
+            if echo "$commit_msg" | grep -q "^$PVP_MARKER:"; then
+                # Check for required metadata fields
+                has_session=$(echo "$commit_msg" | grep -q "^PVP-SESSION:" && echo "yes" || echo "no")
+                has_participants=$(echo "$commit_msg" | grep -q "^PVP-PARTICIPANTS:" && echo "yes" || echo "no")
+
+                if [ "$has_session" = "no" ]; then
+                    incomplete=$((incomplete + 1))
+                    short_sha=$(git rev-parse --short "$commit")
+                    echo "WARNING: $short_sha has incomplete PVP metadata (missing session ID)"
+                fi
+            fi
+        done
+
+        if [ "$incomplete" -gt 0 ]; then
+            echo ""
+            echo "Found $incomplete commit(s) with incomplete decision trails"
+        fi
+    fi
+
+    echo ""
+done
+
+exit 0

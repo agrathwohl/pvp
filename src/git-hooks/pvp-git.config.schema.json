@@ -1,0 +1,223 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://pvp.dev/schemas/pvp-git.config.schema.json",
+  "title": "PVP Git Configuration",
+  "description": "Configuration for PVP git hooks and bridge service",
+  "type": "object",
+  "properties": {
+    "socket_path": {
+      "type": "string",
+      "description": "Unix socket path for hook communication",
+      "default": "/tmp/pvp-git-bridge.sock"
+    },
+    "http_port": {
+      "type": "integer",
+      "minimum": 1024,
+      "maximum": 65535,
+      "description": "HTTP port for fallback API (localhost only)",
+      "default": 9847
+    },
+    "state_file": {
+      "type": "string",
+      "description": "Path to persistent state file",
+      "default": "~/.pvp/git-bridge-state.json"
+    },
+    "notes_ref": {
+      "type": "string",
+      "description": "Git notes reference for extended metadata",
+      "default": "refs/notes/pvp"
+    },
+    "webhooks": {
+      "type": "array",
+      "description": "Webhooks to trigger on git events",
+      "items": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "Webhook endpoint URL"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["commit", "push", "session_end"]
+            },
+            "description": "Events to trigger webhook"
+          },
+          "secret": {
+            "type": "string",
+            "description": "HMAC secret for webhook signing"
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 30000,
+            "default": 5000,
+            "description": "Webhook request timeout in milliseconds"
+          }
+        },
+        "required": ["url", "events"]
+      },
+      "default": []
+    },
+    "enforcement": {
+      "type": "object",
+      "description": "Metadata enforcement settings",
+      "properties": {
+        "enforce_metadata": {
+          "type": "boolean",
+          "default": false,
+          "description": "Require PVP metadata on commits"
+        },
+        "min_pvp_coverage": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 0,
+          "description": "Minimum percentage of commits with PVP metadata"
+        },
+        "warn_only": {
+          "type": "boolean",
+          "default": true,
+          "description": "Warn instead of rejecting pushes"
+        }
+      }
+    },
+    "message_filter": {
+      "type": "object",
+      "description": "Filter settings for commit context messages",
+      "properties": {
+        "include_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "PVP message types to include in commit context",
+          "default": [
+            "prompt.submit",
+            "response.end",
+            "tool.propose",
+            "tool.result",
+            "gate.approve",
+            "gate.reject",
+            "context.add",
+            "fork.create",
+            "merge.execute"
+          ]
+        },
+        "exclude_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "PVP message types to exclude from commit context",
+          "default": [
+            "heartbeat.ping",
+            "heartbeat.pong",
+            "presence.update",
+            "thinking.chunk",
+            "response.chunk"
+          ]
+        },
+        "max_messages": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500,
+          "default": 50,
+          "description": "Maximum messages to track since last commit"
+        },
+        "max_age_seconds": {
+          "type": "integer",
+          "minimum": 60,
+          "maximum": 86400,
+          "default": 3600,
+          "description": "Maximum age of messages to include"
+        }
+      }
+    },
+    "summarization": {
+      "type": "object",
+      "description": "Auto-summarization settings",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable AI-powered summarization"
+        },
+        "max_tokens": {
+          "type": "integer",
+          "minimum": 20,
+          "maximum": 500,
+          "default": 100,
+          "description": "Maximum tokens for summary"
+        },
+        "style": {
+          "type": "string",
+          "enum": ["brief", "detailed", "technical"],
+          "default": "brief",
+          "description": "Summarization style"
+        }
+      }
+    },
+    "commit_message": {
+      "type": "object",
+      "description": "Commit message formatting options",
+      "properties": {
+        "include_session_id": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include PVP session ID in commit"
+        },
+        "include_participants": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include active participants list"
+        },
+        "include_message_count": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include message count since last commit"
+        },
+        "include_tool_summary": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include tool execution summary"
+        },
+        "include_approvals": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include approval count"
+        },
+        "suggest_message": {
+          "type": "boolean",
+          "default": true,
+          "description": "Suggest commit message based on session activity"
+        }
+      }
+    },
+    "git_notes": {
+      "type": "object",
+      "description": "Git notes storage settings",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Store extended metadata in git notes"
+        },
+        "include_full_messages": {
+          "type": "boolean",
+          "default": false,
+          "description": "Store full message content (can be large)"
+        },
+        "auto_push": {
+          "type": "boolean",
+          "default": false,
+          "description": "Auto-push notes with regular push"
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}

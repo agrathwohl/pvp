@@ -1,0 +1,60 @@
+{
+  "$schema": "./pvp-git.config.schema.json",
+  "socket_path": "/tmp/pvp-git-bridge.sock",
+  "http_port": 9847,
+  "state_file": "~/.pvp/git-bridge-state.json",
+  "notes_ref": "refs/notes/pvp",
+  "webhooks": [
+    {
+      "url": "https://your-ci.example.com/pvp-webhook",
+      "events": ["commit", "push"],
+      "secret": "your-webhook-secret",
+      "timeout_ms": 5000
+    }
+  ],
+  "enforcement": {
+    "enforce_metadata": false,
+    "min_pvp_coverage": 0,
+    "warn_only": true
+  },
+  "message_filter": {
+    "include_types": [
+      "prompt.submit",
+      "response.end",
+      "tool.propose",
+      "tool.result",
+      "gate.approve",
+      "gate.reject",
+      "context.add",
+      "fork.create",
+      "merge.execute"
+    ],
+    "exclude_types": [
+      "heartbeat.ping",
+      "heartbeat.pong",
+      "presence.update",
+      "thinking.chunk",
+      "response.chunk"
+    ],
+    "max_messages": 50,
+    "max_age_seconds": 3600
+  },
+  "summarization": {
+    "enabled": false,
+    "max_tokens": 100,
+    "style": "brief"
+  },
+  "commit_message": {
+    "include_session_id": true,
+    "include_participants": true,
+    "include_message_count": true,
+    "include_tool_summary": true,
+    "include_approvals": true,
+    "suggest_message": true
+  },
+  "git_notes": {
+    "enabled": true,
+    "include_full_messages": false,
+    "auto_push": false
+  }
+}

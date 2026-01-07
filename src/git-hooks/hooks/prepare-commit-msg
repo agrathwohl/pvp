@@ -1,0 +1,169 @@
+#!/bin/sh
+# PVP Git Hook: prepare-commit-msg
+# Reads current PVP session state and embeds decision context in commit messages
+# POSIX-compliant for maximum portability
+
+set -e
+
+COMMIT_MSG_FILE="$1"
+COMMIT_SOURCE="$2"
+SHA1="$3"
+
+# Configuration
+PVP_SOCKET="${PVP_GIT_SOCKET:-/tmp/pvp-git-bridge.sock}"
+PVP_STATE_FILE="${PVP_STATE_FILE:-$HOME/.pvp/current-session.json}"
+PVP_CONFIG_FILE="${PVP_CONFIG_FILE:-.pvp-git.config.json}"
+PVP_MARKER="PVP-META"
+
+# Exit early if this is a merge, squash, or other special commit
+case "$COMMIT_SOURCE" in
+    merge|squash|template)
+        exit 0
+        ;;
+esac
+
+# Check if PVP metadata already exists (re-edit scenario)
+if grep -q "^$PVP_MARKER:" "$COMMIT_MSG_FILE" 2>/dev/null; then
+    exit 0
+fi
+
+# Function to query PVP bridge service via socket (preferred)
+query_pvp_socket() {
+    if [ -S "$PVP_SOCKET" ]; then
+        # Use nc (netcat) for socket communication
+        response=$(echo '{"action":"get_commit_context"}' | nc -U "$PVP_SOCKET" 2>/dev/null) || return 1
+        echo "$response"
+        return 0
+    fi
+    return 1
+}
+
+# Function to read state from file (fallback)
+read_pvp_state_file() {
+    if [ -f "$PVP_STATE_FILE" ]; then
+        cat "$PVP_STATE_FILE"
+        return 0
+    fi
+    return 1
+}
+
+# Function to query PVP bridge via HTTP API (alternative)
+query_pvp_http() {
+    pvp_port="${PVP_GIT_PORT:-9847}"
+    if command -v curl >/dev/null 2>&1; then
+        response=$(curl -s --connect-timeout 1 "http://localhost:$pvp_port/commit-context" 2>/dev/null) || return 1
+        echo "$response"
+        return 0
+    elif command -v wget >/dev/null 2>&1; then
+        response=$(wget -qO- --timeout=1 "http://localhost:$pvp_port/commit-context" 2>/dev/null) || return 1
+        echo "$response"
+        return 0
+    fi
+    return 1
+}
+
+# Try to get PVP context (socket -> file -> http)
+get_pvp_context() {
+    query_pvp_socket && return 0
+    read_pvp_state_file && return 0
+    query_pvp_http && return 0
+    return 1
+}
+
+# Extract JSON field (POSIX-compatible, no jq dependency)
+json_field() {
+    field="$1"
+    input="$2"
+    # Simple extraction for flat JSON - handles quoted strings
+    echo "$input" | sed -n "s/.*\"$field\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1
+}
+
+json_array_field() {
+    field="$1"
+    input="$2"
+    # Extract array content
+    echo "$input" | sed -n "s/.*\"$field\"[[:space:]]*:[[:space:]]*\[\([^]]*\)\].*/\1/p" | head -1
+}
+
+# Main logic
+main() {
+    # Try to get PVP context
+    pvp_context=$(get_pvp_context) || {
+        # No active PVP session - exit silently
+        exit 0
+    }
+
+    # Parse context
+    session_id=$(json_field "session_id" "$pvp_context")
+
+    # No active session
+    if [ -z "$session_id" ]; then
+        exit 0
+    fi
+
+    # Extract relevant fields
+    last_commit=$(json_field "last_commit" "$pvp_context")
+    messages_since=$(json_field "messages_since_last_commit" "$pvp_context")
+    participants=$(json_array_field "active_participants" "$pvp_context")
+    decision_summary=$(json_field "decision_summary" "$pvp_context")
+    tool_executions=$(json_field "tool_executions" "$pvp_context")
+    prompts_count=$(json_field "prompts_count" "$pvp_context")
+    approvals_count=$(json_field "approvals_count" "$pvp_context")
+
+    # Build metadata block
+    metadata_block=""
+    metadata_block="$metadata_block
+---
+$PVP_MARKER: true
+PVP-SESSION: $session_id"
+
+    if [ -n "$participants" ]; then
+        metadata_block="$metadata_block
+PVP-PARTICIPANTS: $participants"
+    fi
+
+    if [ -n "$messages_since" ]; then
+        metadata_block="$metadata_block
+PVP-MESSAGES: $messages_since"
+    fi
+
+    if [ -n "$prompts_count" ]; then
+        metadata_block="$metadata_block
+PVP-PROMPTS: $prompts_count"
+    fi
+
+    if [ -n "$approvals_count" ]; then
+        metadata_block="$metadata_block
+PVP-APPROVALS: $approvals_count"
+    fi
+
+    if [ -n "$tool_executions" ]; then
+        metadata_block="$metadata_block
+PVP-TOOLS: $tool_executions"
+    fi
+
+    # Append metadata to commit message
+    if [ -n "$metadata_block" ]; then
+        echo "$metadata_block" >> "$COMMIT_MSG_FILE"
+    fi
+
+    # If we have a decision summary, suggest it as commit message prefix
+    if [ -n "$decision_summary" ] && [ "$(wc -l < "$COMMIT_MSG_FILE")" -le 1 ]; then
+        # Read existing message
+        existing_msg=$(cat "$COMMIT_MSG_FILE")
+
+        # Check if message is empty or just comments
+        real_content=$(echo "$existing_msg" | grep -v '^#' | grep -v '^[[:space:]]*$' | head -1)
+
+        if [ -z "$real_content" ]; then
+            # Prepend suggested message
+            temp_file=$(mktemp)
+            echo "# PVP suggests: $decision_summary" > "$temp_file"
+            echo "" >> "$temp_file"
+            cat "$COMMIT_MSG_FILE" >> "$temp_file"
+            mv "$temp_file" "$COMMIT_MSG_FILE"
+        fi
+    fi
+}
+
+main "$@"
