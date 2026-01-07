@@ -133,17 +133,22 @@ class PVPServer {
         return;
       }
 
-      // Route message to session
-      const session = this.sessions.get(message.session);
+      // Route message to session (auto-create on join if doesn't exist)
+      let session = this.sessions.get(message.session);
       if (!session) {
-        const errorMsg = createMessage("error", message.session, "system", {
-          code: "SESSION_NOT_FOUND",
-          message: `Session ${message.session} not found`,
-          recoverable: false,
-          related_to: message.id,
-        });
-        this.transportServer.broadcast(errorMsg, (id) => id === participantId);
-        return;
+        // Auto-create session on join attempt
+        if (message.type === "session.join") {
+          session = await this.autoCreateSession(message.session, participantId);
+        } else {
+          const errorMsg = createMessage("error", message.session, "system", {
+            code: "SESSION_NOT_FOUND",
+            message: `Session ${message.session} not found`,
+            recoverable: false,
+            related_to: message.id,
+          });
+          this.transportServer.broadcast(errorMsg, (id) => id === participantId);
+          return;
+        }
       }
 
       // Create broadcast function for this session
@@ -223,6 +228,52 @@ class PVPServer {
 
     // Broadcast session created
     this.transportServer.broadcast(message);
+  }
+
+  /**
+   * Auto-create a session when someone tries to join a non-existent session.
+   * Uses default configuration for the session.
+   */
+  private async autoCreateSession(
+    sessionId: SessionId,
+    participantId: ParticipantId,
+  ): Promise<Session> {
+    // Create session working directory
+    const workingDirectory = path.join(this.config.git_dir, sessionId);
+    await mkdir(workingDirectory, { recursive: true });
+
+    // Initialize git repository with agent as committer
+    try {
+      execSync("git init", { cwd: workingDirectory, stdio: "pipe" });
+      execSync('git config user.name "PVP Agent"', { cwd: workingDirectory, stdio: "pipe" });
+      execSync('git config user.email "agent@pvp.session"', { cwd: workingDirectory, stdio: "pipe" });
+      logger.info({ sessionId, workingDirectory }, "Git repository initialized for auto-created session");
+    } catch (error) {
+      logger.warn({ sessionId, workingDirectory, error }, "Failed to initialize git repository");
+    }
+
+    // Create session with default config
+    const defaultConfig: SessionConfig = {
+      require_approval_for: [],
+      default_gate_quorum: { type: "any", count: 1 },
+      allow_forks: true,
+      max_participants: 10,
+      ordering_mode: "causal",
+      on_participant_timeout: "wait",
+      idle_timeout_seconds: 300,
+      away_timeout_seconds: 600,
+      heartbeat_interval_seconds: 30,
+    };
+
+    const session = new Session(sessionId, `Auto-created session`, defaultConfig, workingDirectory);
+    this.sessions.set(sessionId, session);
+
+    logger.info({ sessionId, workingDirectory, participantId }, "Session auto-created on join");
+
+    // Notify bridge service of new session
+    this.bridgeService.onSessionStart(sessionId, []);
+
+    return session;
   }
 
   private handleDisconnect(participantId: ParticipantId): void {
