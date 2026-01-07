@@ -2,6 +2,8 @@
 
 A **multiplayer, role-based coordination protocol** for human-AI collaborative development.
 
+**Check out [pvp.codes!](https://pvp.codes)**
+
 [![GitHub Package](https://img.shields.io/github/v/release/agrathwohl/pvp?label=GitHub%20Package)](https://github.com/agrathwohl/pvp/packages)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -67,7 +69,7 @@ const server = await startServer({ port: 3000 });
 await startTUI({
   url: "ws://localhost:3000",
   name: "Alice",
-  role: "driver"
+  role: "driver",
 });
 ```
 
@@ -78,7 +80,7 @@ import { startAgent } from "@agrathwohl/pvp/agent";
 const agent = await startAgent({
   url: "ws://localhost:3000",
   session: "session-id",
-  apiKey: process.env.ANTHROPIC_API_KEY
+  apiKey: process.env.ANTHROPIC_API_KEY,
 });
 ```
 
@@ -88,11 +90,11 @@ See [API Documentation](./docs/API.md) for complete reference.
 
 This project uses different runtimes per component for optimal performance and security:
 
-| Component | Runtime | Command | Notes |
-|-----------|---------|---------|-------|
+| Component  | Runtime | Command          | Notes                                |
+| ---------- | ------- | ---------------- | ------------------------------------ |
 | **Server** | Node.js | `npm run server` | WebSocket server, session management |
-| **TUI** | Node.js | `npm run tui` | Terminal user interface client |
-| **Agent** | Bun | `npm run agent` | Claude AI agent with shell execution |
+| **TUI**    | Node.js | `npm run tui`    | Terminal user interface client       |
+| **Agent**  | Bun     | `npm run agent`  | Claude AI agent with shell execution |
 
 ### Why Bun for Agent?
 
@@ -143,6 +145,7 @@ npm run agent -- \
 ```
 
 **Agent Capabilities**:
+
 - Native Anthropic tool use API for shell command execution
 - Command safety categorization (safe/low/medium/high/critical)
 - Approval gates for risky operations
@@ -227,12 +230,12 @@ Decision-By: human:alice,ai:claude
 
 ### API Endpoints
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/commit-context` | GET | Current session metrics |
-| `/extended-metadata` | GET | Full session metadata |
-| `/status` | GET | Bridge service status |
-| `/health` | GET | Health check |
+| Endpoint             | Method | Description             |
+| -------------------- | ------ | ----------------------- |
+| `/commit-context`    | GET    | Current session metrics |
+| `/extended-metadata` | GET    | Full session metadata   |
+| `/status`            | GET    | Bridge service status   |
+| `/health`            | GET    | Health check            |
 
 ### Documentation
 
