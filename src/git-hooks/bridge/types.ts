@@ -165,6 +165,7 @@ export interface BridgeRequest {
 export type BridgeAction =
   | "get_commit_context"
   | "get_extended_metadata"
+  | "get_commits"
   | "commit_created"
   | "session_started"
   | "session_ended"
@@ -174,7 +175,7 @@ export type BridgeAction =
 
 export interface BridgeResponse {
   success: boolean;
-  data?: CommitContext | ExtendedMetadata | BridgeStatus;
+  data?: CommitContext | ExtendedMetadata | BridgeStatus | RecentCommit[];
   error?: string;
 }
 

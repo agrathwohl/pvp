@@ -81,6 +81,7 @@ export class PvpGitBridgeService {
   private startTime: number = Date.now();
   private messagesProcessed: number = 0;
   private commitsTracked: number = 0;
+  private recentCommits: RecentCommit[] = [];
   private connections: Set<Socket> = new Set();
 
   constructor(config: Partial<PvpGitConfig> = {}) {
@@ -295,7 +296,12 @@ export class PvpGitBridgeService {
   private handleHttpGet(url: string, res: ServerResponse): void {
     let response: BridgeResponse;
 
-    switch (url) {
+    // Parse URL and query params
+    const urlObj = new URL(url, "http://localhost");
+    const pathname = urlObj.pathname;
+    const limit = parseInt(urlObj.searchParams.get("limit") || "20", 10);
+
+    switch (pathname) {
       case "/commit-context":
         response = this.processRequest({ action: "get_commit_context" });
         break;
@@ -304,6 +310,9 @@ export class PvpGitBridgeService {
         break;
       case "/status":
         response = this.processRequest({ action: "get_status" });
+        break;
+      case "/commits":
+        response = this.processRequest({ action: "get_commits", data: { limit } });
         break;
       default:
         res.writeHead(404, { "Content-Type": "application/json" });
@@ -389,6 +398,9 @@ export class PvpGitBridgeService {
       case "get_status":
         return this.getStatus();
 
+      case "get_commits":
+        return this.getCommits(request.data?.limit as number | undefined);
+
       case "commit_created":
         return this.handleCommitCreated(request.data || {});
 
@@ -464,15 +476,36 @@ export class PvpGitBridgeService {
     return { success: true, data: status };
   }
 
+  private getCommits(limit?: number): BridgeResponse {
+    const maxCommits = Math.min(limit || 20, 100);
+    return { success: true, data: this.recentCommits.slice(0, maxCommits) };
+  }
+
   private handleCommitCreated(data: Record<string, unknown>): BridgeResponse {
     const commitSha = data.commit_sha as string;
     const timestamp = data.timestamp as string || new Date().toISOString();
+    const message = data.message as string | undefined;
 
     if (!commitSha) {
       return { success: false, error: "Missing commit_sha" };
     }
 
     logger.info({ commit_sha: commitSha }, "Commit created");
+
+    // Track this commit in recent commits
+    const recentCommit: RecentCommit = {
+      sha: commitSha,
+      timestamp,
+      session_id: this.state.session_id,
+      had_pvp_metadata: true,
+      participants: this.state.active_participants.map(p => p.name),
+      message_count: this.state.messages_since_last_commit,
+    };
+    this.recentCommits.unshift(recentCommit);
+    // Keep only last 100 commits in memory
+    if (this.recentCommits.length > 100) {
+      this.recentCommits = this.recentCommits.slice(0, 100);
+    }
 
     // Update state
     this.state.last_commit = commitSha;
@@ -704,6 +737,9 @@ export class PvpGitBridgeService {
           this.state = persisted.current_session;
           logger.info({ session_id: this.state.session_id }, "Restored persisted state");
         }
+        if (persisted.recent_commits) {
+          this.recentCommits = persisted.recent_commits;
+        }
       }
     } catch (err) {
       logger.warn({ error: err instanceof Error ? err.message : "Unknown" }, "Failed to load persisted state");
@@ -720,7 +756,7 @@ export class PvpGitBridgeService {
       const persisted: PersistentState = {
         version: 1,
         current_session: this.state,
-        recent_commits: [], // Would track recent commits
+        recent_commits: this.recentCommits.slice(0, 100), // Keep last 100 commits
         config_hash: "", // Would hash config for change detection
       };
 

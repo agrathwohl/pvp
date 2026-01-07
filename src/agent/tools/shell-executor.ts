@@ -245,11 +245,11 @@ export async function executeShellCommand(
 
   try {
     // Build the full command string for shell execution
-    // We use sh -c to properly resolve commands via PATH (required on NixOS and similar systems)
+    // We use /bin/sh -c to properly resolve commands via PATH (required on NixOS and similar systems)
     const fullCommand = quoteShellArgs([shellCmd.command, ...shellCmd.args]);
 
-    // Bun.spawn with shell wrapper for PATH resolution
-    proc = spawn(["sh", "-c", fullCommand], {
+    // Bun.spawn with shell wrapper for PATH resolution - use absolute path for shell
+    proc = spawn(["/bin/sh", "-c", fullCommand], {
       stdout: "pipe",
       stderr: "pipe",
       stdin: "ignore",
