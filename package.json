@@ -52,6 +52,7 @@
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
+    "prepare": "npm run build",
     "prepublishOnly": "npm run clean && npm run build && npm run test",
     "server": "tsx src/server/index.ts",
     "tui": "tsx src/tui/index.ts",
