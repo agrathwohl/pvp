@@ -41,7 +41,7 @@ import type {
  *
  * @example
  * ```typescript
- * import { createMessage } from "pvp/protocol";
+ * import { createMessage } from "@agrathwohl/pvp/protocol";
  *
  * // Create a session join message
  * const joinMessage = createMessage(
@@ -104,7 +104,7 @@ export function createMessage<T extends PrimitiveType>(
  *
  * @example
  * ```typescript
- * import { isMessageType } from "pvp/protocol";
+ * import { isMessageType } from "@agrathwohl/pvp/protocol";
  *
  * function handleMessage(message: AnyMessage) {
  *   if (isMessageType(message, "gate.vote")) {

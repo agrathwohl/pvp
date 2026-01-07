@@ -1,5 +1,5 @@
 {
-  "name": "pvp",
+  "name": "@agrathwohl/pvp",
   "version": "0.1.1",
   "description": "Pair Vibecoding Protocol - Multiplayer human-AI collaboration with approval gates and decision tracking",
   "type": "module",
@@ -111,5 +111,8 @@
     "tsx": "^4.7.0",
     "typescript": "^5.3.3",
     "vitest": "^1.2.0"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
   }
 }

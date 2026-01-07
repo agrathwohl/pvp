@@ -2,7 +2,7 @@
 
 A **multiplayer, role-based coordination protocol** for human-AI collaborative development.
 
-[![npm version](https://img.shields.io/npm/v/pvp.svg)](https://www.npmjs.com/package/pvp)
+[![GitHub Package](https://img.shields.io/github/v/release/agrathwohl/pvp?label=GitHub%20Package)](https://github.com/agrathwohl/pvp/packages)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## Overview
@@ -32,17 +32,20 @@ PVP is NOT a chatbot. It's a coordination layer where multiple humans and AI age
 
 ## Installation
 
-### npm Package (Recommended)
+### GitHub Packages (Recommended)
 
 ```bash
-# Install from npm
-npm install pvp
+# Configure GitHub Packages registry for @agrathwohl scope
+npm config set @agrathwohl:registry https://npm.pkg.github.com
+
+# Install
+npm install @agrathwohl/pvp
 
 # Or with yarn
-yarn add pvp
+yarn add @agrathwohl/pvp
 
 # Or with pnpm
-pnpm add pvp
+pnpm add @agrathwohl/pvp
 ```
 
 ### From Source
@@ -67,7 +70,7 @@ curl -fsSL https://bun.sh/install | bash
 ## Programmatic API
 
 ```typescript
-import { startServer, startTUI } from "pvp";
+import { startServer, startTUI } from "@agrathwohl/pvp";
 
 // Start server
 const server = await startServer({ port: 3000 });
@@ -82,7 +85,7 @@ await startTUI({
 
 ```typescript
 // Agent requires Bun runtime - import from submodule
-import { startAgent } from "pvp/agent";
+import { startAgent } from "@agrathwohl/pvp/agent";
 
 const agent = await startAgent({
   url: "ws://localhost:3000",

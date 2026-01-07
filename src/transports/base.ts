@@ -12,7 +12,7 @@ import type { AnyMessage, ParticipantId } from "../protocol/types.js";
  * @example
  * ```typescript
  * // Using WebSocketTransport (the default implementation)
- * import { WebSocketTransport } from "pvp/transports";
+ * import { WebSocketTransport } from "@agrathwohl/pvp/transports";
  *
  * const transport = new WebSocketTransport("ws://localhost:3000", "participant-123");
  * await transport.connect();
@@ -72,7 +72,7 @@ export interface Transport {
  *
  * @example
  * ```typescript
- * import { WebSocketTransportServer } from "pvp/transports";
+ * import { WebSocketTransportServer } from "@agrathwohl/pvp/transports";
  *
  * const server = new WebSocketTransportServer(3000, "0.0.0.0");
  *

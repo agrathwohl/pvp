@@ -28,7 +28,7 @@
  * @example
  * ```typescript
  * // Programmatic usage (requires Bun runtime)
- * import { startAgent } from "pvp/agent";
+ * import { startAgent } from "@agrathwohl/pvp/agent";
  *
  * const agent = await startAgent({
  *   url: "ws://localhost:3000",
@@ -237,7 +237,7 @@ export interface AgentOptions {
  *
  * @example
  * ```typescript
- * import { startAgent } from "pvp/agent";
+ * import { startAgent } from "@agrathwohl/pvp/agent";
  *
  * // Basic usage
  * const agent = await startAgent({
@@ -276,8 +276,8 @@ export interface AgentOptions {
  * @example
  * ```typescript
  * // Full workflow: server, TUI, and agent
- * import { startServer, startTUI } from "pvp";
- * import { startAgent } from "pvp/agent";  // Separate import for Bun
+ * import { startServer, startTUI } from "@agrathwohl/pvp";
+ * import { startAgent } from "@agrathwohl/pvp/agent";  // Separate import for Bun
  * import { ulid } from "ulid";
  *
  * const sessionId = ulid();

@@ -20,14 +20,17 @@ Complete API documentation for the Pair Vibecoding Protocol npm package.
 ## Installation
 
 ```bash
+# Configure GitHub Packages registry
+npm config set @agrathwohl:registry https://npm.pkg.github.com
+
 # npm
-npm install pvp
+npm install @agrathwohl/pvp
 
 # yarn
-yarn add pvp
+yarn add @agrathwohl/pvp
 
 # pnpm
-pnpm add pvp
+pnpm add @agrathwohl/pvp
 ```
 
 ### Runtime Requirements
@@ -45,7 +48,7 @@ pnpm add pvp
 ### Programmatic Usage
 
 ```typescript
-import { startServer, startTUI } from "pvp";
+import { startServer, startTUI } from "@agrathwohl/pvp";
 
 // Start server
 const server = await startServer({ port: 3000 });
@@ -79,7 +82,7 @@ pvp-agent --server ws://localhost:3000 --session <id>
 Start a PVP server programmatically.
 
 ```typescript
-import { startServer } from "pvp";
+import { startServer } from "@agrathwohl/pvp";
 
 const server = await startServer({
   port: 3000,      // default: 3000
@@ -103,7 +106,7 @@ const server = await startServer({
 Core server class for session and connection management.
 
 ```typescript
-import { PVPServer, mergeServerConfig } from "pvp/server";
+import { PVPServer, mergeServerConfig } from "@agrathwohl/pvp/server";
 
 const config = mergeServerConfig({ port: "8080" });
 const server = new PVPServer(config);
@@ -153,7 +156,7 @@ process.on("SIGTERM", () => {
 Merge CLI options with config file and defaults.
 
 ```typescript
-import { mergeServerConfig } from "pvp/server";
+import { mergeServerConfig } from "@agrathwohl/pvp/server";
 
 const config = mergeServerConfig({
   port: "8080",
@@ -193,7 +196,7 @@ interface ServerConfig {
 Start the terminal user interface.
 
 ```typescript
-import { startTUI } from "pvp/tui";
+import { startTUI } from "@agrathwohl/pvp/tui";
 
 await startTUI({
   url: "ws://localhost:3000",
@@ -234,7 +237,7 @@ interface TUIOptions {
 Zustand store hook for TUI state management.
 
 ```typescript
-import { useTUIStore } from "pvp/tui";
+import { useTUIStore } from "@agrathwohl/pvp/tui";
 
 function MyComponent() {
   const { messages, participants, sendMessage } = useTUIStore();
@@ -255,7 +258,7 @@ function MyComponent() {
 Start a Claude AI agent.
 
 ```typescript
-import { startAgent } from "pvp/agent";
+import { startAgent } from "@agrathwohl/pvp/agent";
 
 const agent = await startAgent({
   url: "ws://localhost:3000",
@@ -307,7 +310,7 @@ interface AgentOptions {
 AI agent that connects to PVP sessions.
 
 ```typescript
-import { ClaudeAgent } from "pvp/agent";
+import { ClaudeAgent } from "@agrathwohl/pvp/agent";
 
 const agent = new ClaudeAgent({
   serverUrl: "ws://localhost:3000",
@@ -350,7 +353,7 @@ await agent.disconnect();
 Initialize MCP server connections.
 
 ```typescript
-import { loadMCPConfig } from "pvp/agent";
+import { loadMCPConfig } from "@agrathwohl/pvp/agent";
 
 const configs = loadMCPConfig(rawConfig);
 await agent.initializeMCP(configs);
@@ -366,7 +369,7 @@ await agent.initializeMCP(configs);
 ### MCP Configuration
 
 ```typescript
-import { loadMCPConfig, validateMCPConfig } from "pvp/agent";
+import { loadMCPConfig, validateMCPConfig } from "@agrathwohl/pvp/agent";
 
 // Validate configuration
 const validation = validateMCPConfig(rawConfig);
@@ -407,7 +410,7 @@ const configs = loadMCPConfig(rawConfig);
 Create a PVP protocol message.
 
 ```typescript
-import { createMessage } from "pvp/protocol";
+import { createMessage } from "@agrathwohl/pvp/protocol";
 
 const message = createMessage(
   "session.join",
@@ -445,7 +448,7 @@ const message = createMessage(
 Type guard for message type checking.
 
 ```typescript
-import { isMessageType } from "pvp/protocol";
+import { isMessageType } from "@agrathwohl/pvp/protocol";
 
 if (isMessageType(message, "gate.vote")) {
   console.log(message.payload.decision);
@@ -504,7 +507,7 @@ const message = deserializeMessage(jsonString);
 Client-side transport for connecting to servers.
 
 ```typescript
-import type { Transport } from "pvp/transports";
+import type { Transport } from "@agrathwohl/pvp/transports";
 
 interface Transport {
   readonly participantId: string;
@@ -523,7 +526,7 @@ interface Transport {
 Server-side transport for handling connections.
 
 ```typescript
-import type { TransportServer } from "pvp/transports";
+import type { TransportServer } from "@agrathwohl/pvp/transports";
 
 interface TransportServer {
   onConnection(handler: (transport: Transport) => void): void;
@@ -539,7 +542,7 @@ interface TransportServer {
 WebSocket client transport implementation.
 
 ```typescript
-import { WebSocketTransport } from "pvp/transports";
+import { WebSocketTransport } from "@agrathwohl/pvp/transports";
 
 const transport = new WebSocketTransport(
   "ws://localhost:3000",
@@ -562,7 +565,7 @@ await transport.send(message);
 Service for git decision tracking integration.
 
 ```typescript
-import { PvpGitBridgeService } from "pvp/git-hooks";
+import { PvpGitBridgeService } from "@agrathwohl/pvp/git-hooks";
 
 const bridge = new PvpGitBridgeService();
 
@@ -701,10 +704,10 @@ import type {
   // Transport
   Transport,
   TransportServer
-} from "pvp";
+} from "@agrathwohl/pvp";
 
 // Agent types require separate import (Bun only)
-import type { AgentOptions, ClaudeAgent } from "pvp/agent";
+import type { AgentOptions, ClaudeAgent } from "@agrathwohl/pvp/agent";
 ```
 
 ---

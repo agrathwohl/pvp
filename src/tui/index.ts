@@ -11,7 +11,7 @@
  * @example
  * ```typescript
  * // Programmatic usage
- * import { startTUI } from "pvp/tui";
+ * import { startTUI } from "@agrathwohl/pvp/tui";
  *
  * await startTUI({
  *   url: "ws://localhost:3000",
@@ -125,7 +125,7 @@ export interface TUIOptions {
  *
  * @example
  * ```typescript
- * import { startTUI } from "pvp/tui";
+ * import { startTUI } from "@agrathwohl/pvp/tui";
  *
  * // Create a new session
  * await startTUI({
@@ -145,7 +145,7 @@ export interface TUIOptions {
  * @example
  * ```typescript
  * // Full workflow: start server, then TUI
- * import { startServer, startTUI } from "pvp";
+ * import { startServer, startTUI } from "@agrathwohl/pvp";
  *
  * // In process 1:
  * const server = await startServer({ port: 3000 });

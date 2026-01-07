@@ -11,7 +11,7 @@
  * @example
  * ```typescript
  * // Programmatic usage
- * import { startServer } from "pvp/server";
+ * import { startServer } from "@agrathwohl/pvp/server";
  *
  * const server = await startServer({ port: 3000 });
  * console.log("Server running on port 3000");
@@ -55,8 +55,8 @@ const logger = createLogger("server");
  *
  * @example
  * ```typescript
- * import { PVPServer } from "pvp/server";
- * import { mergeServerConfig } from "pvp/server";
+ * import { PVPServer } from "@agrathwohl/pvp/server";
+ * import { mergeServerConfig } from "@agrathwohl/pvp/server";
  *
  * const config = mergeServerConfig({ port: "8080" });
  * const server = new PVPServer(config);
@@ -480,7 +480,7 @@ export type { ServerConfig };
  *
  * @example
  * ```typescript
- * import { startServer } from "pvp";
+ * import { startServer } from "@agrathwohl/pvp";
  *
  * // Start with defaults (port 3000, all interfaces)
  * const server = await startServer();
@@ -502,7 +502,7 @@ export type { ServerConfig };
  * @example
  * ```typescript
  * // Full example with TUI client
- * import { startServer, startTUI } from "pvp";
+ * import { startServer, startTUI } from "@agrathwohl/pvp";
  *
  * const server = await startServer({ port: 3000 });
  *

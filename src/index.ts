@@ -15,7 +15,7 @@
  *
  * @example
  * ```typescript
- * import { startServer, startTUI } from "pvp";
+ * import { startServer, startTUI } from "@agrathwohl/pvp";
  *
  * // Terminal 1: Start the server
  * const server = await startServer({ port: 3000 });
@@ -43,7 +43,7 @@
  *
  * **Note**: The agent module requires Bun runtime and must be imported separately:
  * ```typescript
- * import { startAgent } from "pvp/agent";
+ * import { startAgent } from "@agrathwohl/pvp/agent";
  * ```
  *
  * ## CLI Commands
@@ -89,7 +89,7 @@ export {
 } from "./tui/index.js";
 
 // Agent exports removed from main entry point - requires Bun runtime
-// Import directly: import { startAgent } from "pvp/agent";
+// Import directly: import { startAgent } from "@agrathwohl/pvp/agent";
 
 // Git hooks bridge
 export { PvpGitBridgeService } from "./git-hooks/bridge/bridge-service.js";
