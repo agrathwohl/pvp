@@ -1,6 +1,6 @@
 import WebSocket, { WebSocketServer } from "ws";
 import { EventEmitter } from "events";
-import { createServer, type Server as HttpServer, type IncomingMessage, type ServerResponse } from "http";
+import { createServer, request as httpRequest, type Server as HttpServer, type IncomingMessage, type ServerResponse } from "http";
 import { createLogger } from "../utils/logger.js";
 import { serializeMessage, deserializeMessage } from "../protocol/messages.js";
 import type { Transport, TransportServer } from "./base.js";
@@ -189,37 +189,53 @@ export class WebSocketTransportServer extends EventEmitter implements TransportS
     const { bridgeHost, bridgePort } = this.bridgeProxy;
     const targetUrl = `http://${bridgeHost}:${bridgePort}${path}`;
 
-    // Use native http to proxy the request
-    import("http").then(({ request }) => {
-      const proxyReq = request(
-        targetUrl,
-        {
-          method: req.method,
-          headers: {
-            ...req.headers,
-            host: `${bridgeHost}:${bridgePort}`,
-          },
+    const proxyReq = httpRequest(
+      targetUrl,
+      {
+        method: req.method,
+        headers: {
+          ...req.headers,
+          host: `${bridgeHost}:${bridgePort}`,
         },
-        (proxyRes) => {
-          res.writeHead(proxyRes.statusCode || 500, {
-            ...proxyRes.headers,
-            "Access-Control-Allow-Origin": "*",
-          });
-          proxyRes.pipe(res);
-        }
-      );
+        timeout: 30000, // 30 second timeout
+      },
+      (proxyRes) => {
+        res.writeHead(proxyRes.statusCode || 500, {
+          ...proxyRes.headers,
+          "Access-Control-Allow-Origin": "*",
+        });
+        proxyRes.pipe(res);
+      }
+    );
 
-      proxyReq.on("error", (err) => {
-        logger.error({ error: err, path }, "Bridge proxy error");
+    proxyReq.on("error", (err) => {
+      logger.error({ error: err, path }, "Bridge proxy error");
+      if (!res.headersSent) {
         res.writeHead(502, {
           "Content-Type": "application/json",
           "Access-Control-Allow-Origin": "*",
         });
         res.end(JSON.stringify({ error: "Bridge service unavailable" }));
-      });
-
-      req.pipe(proxyReq);
+      }
     });
+
+    proxyReq.on("timeout", () => {
+      proxyReq.destroy();
+      if (!res.headersSent) {
+        res.writeHead(504, {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        });
+        res.end(JSON.stringify({ error: "Bridge request timeout" }));
+      }
+    });
+
+    req.on("error", (err) => {
+      logger.error({ error: err, path }, "Client request error");
+      proxyReq.destroy();
+    });
+
+    req.pipe(proxyReq);
   }
 
   onConnection(handler: (transport: Transport) => void): void {
