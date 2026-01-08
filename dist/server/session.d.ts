@@ -1,0 +1,33 @@
+import type { SessionId, SessionState, SessionConfig, ParticipantId, ParticipantState, ParticipantAnnouncePayload, PresenceStatus, AnyMessage, ContextItem, MessageId, GateState, ForkId, ForkState } from "../protocol/types.js";
+export declare class Session {
+    private state;
+    constructor(id: SessionId, name: string | undefined, config: SessionConfig, workingDirectory: string);
+    getWorkingDirectory(): string;
+    getId(): SessionId;
+    getState(): SessionState;
+    getConfig(): SessionConfig;
+    updateConfig(changes: Partial<SessionConfig>): void;
+    addParticipant(info: ParticipantAnnouncePayload): ParticipantState;
+    removeParticipant(participantId: ParticipantId): void;
+    getParticipant(participantId: ParticipantId): ParticipantState | undefined;
+    getParticipants(): Map<ParticipantId, ParticipantState>;
+    updatePresence(participantId: ParticipantId, status: PresenceStatus): void;
+    updateHeartbeat(participantId: ParticipantId): void;
+    addMessage(message: AnyMessage): void;
+    getMessages(): AnyMessage[];
+    getMessage(messageId: MessageId): AnyMessage | undefined;
+    addContext(item: ContextItem): void;
+    updateContext(key: string, updates: Partial<Omit<ContextItem, "key">>): void;
+    removeContext(key: string): void;
+    getContext(key: string): ContextItem | undefined;
+    getAllContext(): Map<string, ContextItem>;
+    addGate(messageId: MessageId, gate: GateState): void;
+    removeGate(messageId: MessageId): void;
+    getGate(messageId: MessageId): GateState | undefined;
+    getPendingGates(): Map<MessageId, GateState>;
+    createFork(fork: ForkState): void;
+    switchFork(forkId: ForkId): void;
+    getCurrentFork(): ForkId | null;
+    getFork(forkId: ForkId): ForkState | undefined;
+    getAllForks(): Map<ForkId, ForkState>;
+}
