@@ -91,8 +91,9 @@ program
   .option("-m, --model <model>", "Claude model to use", "claude-sonnet-4-5-20250929")
   .option("-k, --api-key <key>", "Anthropic API key (or set ANTHROPIC_API_KEY env var)")
   .option("--mcp-config <file>", "Path to MCP servers configuration file (JSON)")
+  .option("-l, --local [path]", "Use local working directory instead of server-provided path. Optional path argument specifies the directory (defaults to cwd)")
   .action(async (options) => {
-    const { server, session, name, model, apiKey, mcpConfig } = options;
+    const { server, session, name, model, apiKey, mcpConfig, local } = options;
 
     // Validate API key
     const finalApiKey = apiKey || process.env.ANTHROPIC_API_KEY;
@@ -105,11 +106,18 @@ program
       process.exit(1);
     }
 
+    // Resolve local working directory
+    const localWorkDir = local ? (typeof local === "string" ? local : process.cwd()) : undefined;
+
     console.log("🤖 Starting Claude AI Agent");
     console.log(`   Server: ${server}`);
     console.log(`   Session: ${session}`);
     console.log(`   Name: ${name}`);
-    console.log(`   Model: ${model}\n`);
+    console.log(`   Model: ${model}`);
+    if (localWorkDir) {
+      console.log(`   Working Dir: ${localWorkDir}`);
+    }
+    console.log();
 
     try {
       const agent = new ClaudeAgent({
@@ -118,6 +126,7 @@ program
         agentName: name,
         model,
         apiKey: finalApiKey,
+        localWorkDir,
       });
 
       // Initialize MCP servers if config provided
@@ -215,6 +224,8 @@ export interface AgentOptions {
   apiKey?: string;
   /** Path to JSON file containing MCP server configurations */
   mcpConfig?: string;
+  /** Local working directory path. If set, ignores server-provided path (for remote connections) */
+  localWorkDir?: string;
 }
 
 /**
@@ -315,11 +326,18 @@ export async function startAgent(options: AgentOptions = {}): Promise<ClaudeAgen
     throw new Error("Anthropic API key required (--api-key or ANTHROPIC_API_KEY env)");
   }
 
+  // Resolve local working directory
+  const localWorkDir = options.localWorkDir ? options.localWorkDir : undefined;
+
   console.log("🤖 Starting Claude AI Agent");
   console.log(`   Server: ${serverUrl}`);
   console.log(`   Session: ${sessionId}`);
   console.log(`   Name: ${agentName}`);
-  console.log(`   Model: ${model}\n`);
+  console.log(`   Model: ${model}`);
+  if (localWorkDir) {
+    console.log(`   Working Dir: ${localWorkDir}`);
+  }
+  console.log();
 
   const agent = new ClaudeAgent({
     serverUrl,
@@ -327,6 +345,7 @@ export async function startAgent(options: AgentOptions = {}): Promise<ClaudeAgen
     agentName,
     model,
     apiKey,
+    localWorkDir,
   });
 
   // Initialize MCP if config provided

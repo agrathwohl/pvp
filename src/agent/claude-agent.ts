@@ -26,6 +26,8 @@ export interface ClaudeAgentConfig {
   agentName?: string;
   model?: string;
   apiKey?: string;
+  /** Local working directory path. If set, ignores server-provided path (for remote connections) */
+  localWorkDir?: string;
 }
 
 export class ClaudeAgent {
@@ -34,6 +36,7 @@ export class ClaudeAgent {
   private participantId: ParticipantId;
   private sessionId: SessionId | null = null;
   private workingDirectory: string | null = null;
+  private localWorkDir: string | null = null;
   private agentName: string;
   private model: string;
   private conversationHistory: MessageParam[] = [];
@@ -72,6 +75,7 @@ export class ClaudeAgent {
     this.participantId = ulid();
     this.agentName = config.agentName || "Claude Assistant";
     this.model = config.model || "claude-sonnet-4-5-20250929";
+    this.localWorkDir = config.localWorkDir || null;
 
     // Initialize Anthropic client
     this.anthropic = new Anthropic({
@@ -153,6 +157,19 @@ export class ClaudeAgent {
 
     this.client.send(joinMsg);
     logger.info(`[${this.agentName}] Joined session: ${sessionId}`);
+
+    // If using local working directory, announce it to the session
+    if (this.localWorkDir) {
+      const contextMsg = createMessage("context.add", sessionId, this.participantId, {
+        key: `agent:${this.participantId}:working_directory`,
+        content_type: "text",
+        content: this.localWorkDir,
+        source: this.agentName,
+        tags: ["agent", "working_directory"],
+      });
+      this.client.send(contextMsg);
+      logger.info({ workingDirectory: this.localWorkDir }, "Announced local working directory to session");
+    }
   }
 
   private async handleMessage(message: AnyMessage): Promise<void> {
@@ -190,8 +207,14 @@ export class ClaudeAgent {
         case "context.add":
           // Check for session working directory
           if (message.payload.key === "session:working_directory" && typeof message.payload.content === "string") {
-            this.workingDirectory = message.payload.content;
-            logger.info({ workingDirectory: this.workingDirectory }, "Session working directory set");
+            if (this.localWorkDir) {
+              // Use local working directory instead of server-provided path (for remote connections)
+              this.workingDirectory = this.localWorkDir;
+              logger.info({ workingDirectory: this.workingDirectory }, "Using local working directory (--local flag)");
+            } else {
+              this.workingDirectory = message.payload.content;
+              logger.info({ workingDirectory: this.workingDirectory }, "Session working directory set");
+            }
           }
           break;
 
