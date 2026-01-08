@@ -40,6 +40,10 @@ export class ClaudeAgent {
         this.agentName = config.agentName || "Claude Assistant";
         this.model = config.model || "claude-sonnet-4-5-20250929";
         this.localWorkDir = config.localWorkDir || null;
+        // If local working directory is set, use it immediately (don't wait for server context.add)
+        if (this.localWorkDir) {
+            this.workingDirectory = this.localWorkDir;
+        }
         // Initialize Anthropic client
         this.anthropic = new Anthropic({
             apiKey: config.apiKey || process.env.ANTHROPIC_API_KEY,
@@ -973,6 +977,15 @@ export class ClaudeAgent {
             const result = await this.fileToolHandler.executeFileWrite(proposalId, path, content, createDirs, this.sessionId, this.participantId, (msg) => this.client.send(msg));
             // Clean up
             this.fileWriteProposals.delete(proposalId);
+            // Notify participants of file change
+            if (result.success) {
+                const updateMsg = createMessage("context.update", this.sessionId, this.participantId, {
+                    key: `file:${result.path}`,
+                    new_content: content,
+                    reason: `File written by ${this.agentName}`,
+                });
+                this.client.send(updateMsg);
+            }
             // Update batch with result
             this.updateBatchResult(proposalId, {
                 success: result.success,
@@ -1013,6 +1026,15 @@ export class ClaudeAgent {
             const result = await this.fileToolHandler.executeFileEdit(proposalId, path, oldText, newText, occurrence, this.sessionId, this.participantId, (msg) => this.client.send(msg));
             // Clean up
             this.fileEditProposals.delete(proposalId);
+            // Notify participants of file change
+            if (result.success) {
+                const updateMsg = createMessage("context.update", this.sessionId, this.participantId, {
+                    key: `file:${result.path}`,
+                    diff: `- ${oldText}\n+ ${newText}`,
+                    reason: `File edited by ${this.agentName}`,
+                });
+                this.client.send(updateMsg);
+            }
             // Update batch with result
             this.updateBatchResult(proposalId, {
                 success: result.success,

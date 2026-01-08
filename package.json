@@ -1,6 +1,6 @@
 {
   "name": "@agrathwohl/pvp",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Pair Vibecoding Protocol - Multiplayer human-AI collaboration with approval gates and decision tracking",
   "type": "module",
   "main": "dist/index.js",
@@ -52,7 +52,7 @@
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
-    "prepare": "npx tsc",
+    "prepare": "[ -d node_modules/typescript ] && npx tsc || echo 'Skipping build (using pre-built dist)'",
     "prepublishOnly": "npm run clean && npm run build && npm run test",
     "server": "tsx src/server/index.ts",
     "tui": "tsx src/tui/index.ts",

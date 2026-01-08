@@ -1,18 +1,11 @@
-#!/usr/bin/env node
-import { Command } from "commander";
+#!/usr/bin/env bun
+/**
+ * PVP Agent CLI - Requires Bun runtime
+ *
+ * Usage:
+ *   pvp-agent --server ws://localhost:3000 --session <id>
+ *   pvp-agent --server wss://ws.pvp.codes --session <id> --local
+ */
 
-const program = new Command();
-
-program
-  .name("pvp-agent")
-  .description("Start a Claude AI agent")
-  .option("-u, --url <url>", "WebSocket server URL", "ws://localhost:3000")
-  .option("-s, --session <id>", "Session ID to join")
-  .option("-n, --name <name>", "Agent name", "Claude")
-  .option("-m, --model <model>", "Claude model to use", "claude-sonnet-4-20250514")
-  .action(async (options) => {
-    const { startAgent } = await import("../dist/agent/index.js");
-    await startAgent(options);
-  });
-
-program.parse();
+// The agent module handles its own CLI parsing
+import "../dist/agent/index.js";

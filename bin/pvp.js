@@ -36,14 +36,27 @@ program
 
 program
   .command("agent")
-  .description("Start a Claude AI agent")
+  .description("Start a Claude AI agent (requires Bun runtime)")
   .option("-u, --url <url>", "WebSocket server URL", "ws://localhost:3000")
-  .option("-s, --session <id>", "Session ID to join")
-  .option("-n, --name <name>", "Agent name", "Claude")
-  .option("-m, --model <model>", "Claude model to use", "claude-sonnet-4-20250514")
+  .option("-s, --session <id>", "Session ID to join (required)")
+  .option("-n, --name <name>", "Agent name", "Claude Assistant")
+  .option("-m, --model <model>", "Claude model to use", "claude-sonnet-4-5-20250929")
+  .option("-k, --api-key <key>", "Anthropic API key (or set ANTHROPIC_API_KEY)")
+  .option("-l, --local [path]", "Use local working directory (optional path, defaults to cwd)")
+  .option("--mcp-config <file>", "Path to MCP servers config file")
   .action(async (options) => {
     const { startAgent } = await import("../dist/agent/index.js");
-    await startAgent(options);
+    // Map local flag to localWorkDir
+    const agentOptions = {
+      url: options.url,
+      session: options.session,
+      name: options.name,
+      model: options.model,
+      apiKey: options.apiKey,
+      mcpConfig: options.mcpConfig,
+      localWorkDir: options.local ? (typeof options.local === "string" ? options.local : process.cwd()) : undefined,
+    };
+    await startAgent(agentOptions);
   });
 
 program
