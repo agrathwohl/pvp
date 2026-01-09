@@ -213,7 +213,6 @@ export type Capability =
 export type TransportType =
   | "websocket"
   | "mcp"
-  | "t140"
   | "http"
   | "stdio";
 

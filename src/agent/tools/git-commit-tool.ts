@@ -14,6 +14,7 @@ import {
   type ShellCommand,
   type StreamingOutput,
 } from "./shell-executor.js";
+import { createCommitFileMessages } from "./file-change-detector.js";
 import type {
   SessionId,
   ParticipantId,
@@ -292,6 +293,19 @@ export function createGitCommitToolHandler(): GitCommitToolHandler {
             duration_ms: Date.now() - startTime,
           })
         );
+
+        // Broadcast context.update for committed files so clients stay synchronized
+        if (result.exitCode === 0) {
+          const fileMessages = await createCommitFileMessages(
+            context.workingDirectory,
+            context.sessionId,
+            context.agentId,
+            "git_commit"
+          );
+          for (const msg of fileMessages) {
+            broadcast(msg);
+          }
+        }
       } catch (error) {
         broadcast(
           createMessage("tool.result", context.sessionId, context.agentId, {

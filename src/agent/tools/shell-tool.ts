@@ -6,6 +6,11 @@ import {
   type ShellCommand,
   type StreamingOutput,
 } from "./shell-executor.js";
+import {
+  snapshotDirectory,
+  detectChanges,
+  createFileChangeMessages,
+} from "./file-change-detector.js";
 import type {
   SessionId,
   ParticipantId,
@@ -25,7 +30,8 @@ export interface ShellToolHandler {
     shellCmd: ShellCommand,
     sessionId: SessionId,
     agentId: ParticipantId,
-    broadcast: (msg: AnyMessage) => void
+    broadcast: (msg: AnyMessage) => void,
+    workingDir?: string
   ): Promise<void>;
 }
 
@@ -69,11 +75,16 @@ export function createShellToolHandler(): ShellToolHandler {
       shellCmd: ShellCommand,
       sessionId: SessionId,
       agentId: ParticipantId,
-      broadcast: (msg: AnyMessage) => void
+      broadcast: (msg: AnyMessage) => void,
+      workingDir?: string
     ): Promise<void> {
       const startTime = Date.now();
       let success = false;
       let errorMsg: string | undefined;
+
+      // Snapshot files before execution to detect changes
+      const effectiveWorkDir = workingDir || shellCmd.cwd || process.cwd();
+      const beforeSnapshot = await snapshotDirectory(effectiveWorkDir);
 
       const callbacks: StreamingOutput = {
         onStdout: (data: string) => {
@@ -137,6 +148,18 @@ export function createShellToolHandler(): ShellToolHandler {
         });
         broadcast(resultMsg);
 
+        // Detect and broadcast file changes (regardless of success/failure)
+        const changes = await detectChanges(beforeSnapshot, effectiveWorkDir);
+        const changeMessages = createFileChangeMessages(
+          changes,
+          sessionId,
+          agentId,
+          `shell: ${shellCmd.command}`
+        );
+        for (const msg of changeMessages) {
+          broadcast(msg);
+        }
+
       } catch (error) {
         // Send error result
         const resultMsg = createMessage("tool.result", sessionId, agentId, {
@@ -146,6 +169,18 @@ export function createShellToolHandler(): ShellToolHandler {
           duration_ms: Date.now() - startTime,
         });
         broadcast(resultMsg);
+
+        // Still detect file changes even on error
+        const changes = await detectChanges(beforeSnapshot, effectiveWorkDir);
+        const changeMessages = createFileChangeMessages(
+          changes,
+          sessionId,
+          agentId,
+          `shell: ${shellCmd.command}`
+        );
+        for (const msg of changeMessages) {
+          broadcast(msg);
+        }
       }
     },
   };

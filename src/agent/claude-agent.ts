@@ -459,7 +459,8 @@ export class ClaudeAgent {
               error: msg.payload.error
             };
           }
-        }
+        },
+        this.workingDirectory ?? undefined
       );
     } catch (error) {
       // Send error result back to Claude

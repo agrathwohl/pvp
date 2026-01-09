@@ -38,6 +38,98 @@ PVP is NOT a chatbot. It's a coordination layer where multiple humans and AI age
 npm install github:agrathwohl/pvp
 ```
 
+### Global Installation (Recommended)
+
+Install globally to use the CLI binaries from anywhere:
+
+```bash
+# From GitHub Package Registry
+npm i -g @agrathwohl/pvp
+
+# Verify installation
+pvp --version
+```
+
+**Prerequisites**: The agent requires [Bun runtime](https://bun.sh). Install it first:
+
+```bash
+curl -fsSL https://bun.sh/install | bash
+```
+
+### CLI Binaries
+
+After global installation, three binaries are available:
+
+| Binary | Runtime | Description |
+|--------|---------|-------------|
+| `pvp-server` | Node.js | WebSocket server for session coordination |
+| `pvp-tui` | Node.js | Terminal UI client for human participants |
+| `pvp-agent` | **Bun** | Claude AI agent with tool execution |
+
+#### pvp-server
+
+Start the PVP WebSocket server:
+
+```bash
+# Default (port 3000)
+pvp-server
+
+# Custom port and host
+pvp-server --port 8080 --host 0.0.0.0
+```
+
+#### pvp-tui
+
+Connect to a session with the Terminal UI:
+
+```bash
+# Create a new session
+pvp-tui --url ws://localhost:3000 --name "Alice"
+
+# Join existing session
+pvp-tui --url ws://localhost:3000 --session <session-id> --name "Bob"
+
+# Connect to remote server
+pvp-tui --url wss://ws.pvp.codes --session <session-id> --name "Alice"
+```
+
+#### pvp-agent
+
+Connect a Claude AI agent to a session:
+
+```bash
+# Basic usage (requires ANTHROPIC_API_KEY env var)
+pvp-agent --url ws://localhost:3000 --session <session-id>
+
+# With local working directory (agent executes commands in your local folder)
+pvp-agent --url wss://ws.pvp.codes --session <session-id> --local
+
+# Specify working directory path
+pvp-agent --url wss://ws.pvp.codes --session <session-id> --local /path/to/project
+
+# Full options
+pvp-agent \
+  --url ws://localhost:3000 \
+  --session <session-id> \
+  --name "Claude Assistant" \
+  --model claude-sonnet-4-5-20250929 \
+  --api-key sk-ant-... \
+  --local
+```
+
+**pvp-agent options:**
+| Option | Description | Default |
+|--------|-------------|---------|
+| `-u, --url <url>` | WebSocket server URL | `ws://localhost:3000` |
+| `-s, --session <id>` | Session ID to join | (required) |
+| `-n, --name <name>` | Agent display name | `Claude Assistant` |
+| `-m, --model <model>` | Claude model | `claude-sonnet-4-5-20250929` |
+| `-k, --api-key <key>` | Anthropic API key | `$ANTHROPIC_API_KEY` |
+| `-l, --local [path]` | Use local working directory | (disabled) |
+| `--mcp-config <file>` | MCP servers config file | (none) |
+
+**Important**: `pvp-agent` uses Bun runtime. If you see `Cannot find package "bun"`, ensure Bun is installed and in your PATH.
+
 ### From Source
 
 ```bash
@@ -48,13 +140,6 @@ npm install
 
 # Build the project
 npm run build
-```
-
-### Bun Runtime (Required for Agent)
-
-```bash
-# Install Bun (required for agent component)
-curl -fsSL https://bun.sh/install | bash
 ```
 
 ## Programmatic API
@@ -155,10 +240,10 @@ npm run agent -- \
 ## Architecture
 
 ```
-┌─────────────────┐      ┌─────────────────┐      ┌─────────────┐
-│  TUI Client     │─────▶│  PVP Server     │─────▶│   Storage   │
-│  (Ink/React)    │      │  (WebSocket)    │      │  (SQLite)   │
-└─────────────────┘      └─────────────────┘      └─────────────┘
+┌─────────────────┐      ┌─────────────────┐
+│  TUI Client     │─────▶│  PVP Server     │
+│  (Ink/React)    │      │  (WebSocket)    │
+└─────────────────┘      └─────────────────┘
                                   │
                          ┌────────┴────────┐
                          │   Protocol      │
@@ -389,24 +474,6 @@ Real-time bidirectional communication for TUI clients.
 **Server**: `src/transports/websocket.ts`
 **Client**: Automatic reconnection with exponential backoff
 
-### T.140 (Audio Integration)
-
-Experimental support for T.140 RTP streams for audio transcriptions (e.g., from meetings).
-
-See `src/transports/t140.ts` for implementation.
-
-## Storage
-
-- **Memory**: In-memory storage for MVP (default)
-- **SQLite**: Persistent content-addressed storage
-
-```typescript
-import { SQLiteStorage } from "./src/storage/sqlite.js";
-
-const storage = new SQLiteStorage("./pvp.db");
-await storage.store(hash, Buffer.from(content));
-```
-
 ## Development
 
 ```bash
@@ -497,7 +564,6 @@ pm2 start dist/server/index.js --name pvp-server
 - [x] Unit tests (protocol, session, gates, decision tracking)
 - [x] Integration tests (MCP server integration)
 - [x] Decision tracking system (git-based audit trail)
-- [ ] T.140 audio transport integration
 - [ ] MCP transport support
 - [ ] Agent adapters (Claude, OpenAI, etc.)
 - [ ] Persistent session recovery
