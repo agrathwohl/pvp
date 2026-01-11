@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { MessageParam, ToolUseBlock, Tool, ToolResultBlockParam } from "@anthropic-ai/sdk/resources/messages.js";
+import * as fs from "fs/promises";
 import path from "path";
 import { WebSocketClient } from "../transports/websocket.js";
 import { createMessage } from "../protocol/messages.js";
@@ -11,6 +12,7 @@ import { categorizeCommand } from "./tools/shell-executor.js";
 import { createFileToolHandler } from "./tools/file-tool.js";
 import { categorizeFilePath, isPathBlocked, type FileWriteCommand, type FileEditCommand } from "./tools/file-executor.js";
 import { createGitCommitToolHandler, type GitCommitArgs, type CommitSessionContext } from "./tools/git-commit-tool.js";
+import { createNotebookToolHandler, type NotebookOutputFormat } from "./tools/notebook-tool.js";
 import { MCPManager, type MCPServerConfig, type MCPToolDefinition } from "./mcp/index.js";
 import type {
   AnyMessage,
@@ -47,6 +49,8 @@ export class ClaudeAgent {
   private fileWriteProposals: Map<MessageId, { path: string; content: string; createDirs: boolean; toolUseId: string }> = new Map();
   private fileEditProposals: Map<MessageId, { path: string; oldText: string; newText: string; occurrence: number; toolUseId: string }> = new Map();
   private gitCommitProposals: Map<MessageId, { args: GitCommitArgs; context: CommitSessionContext; toolUseId: string }> = new Map();
+  private notebookToolHandler: ReturnType<typeof createNotebookToolHandler>;
+  private notebookProposals: Map<MessageId, { notebookPath: string; outputFormat: NotebookOutputFormat; toolUseId: string }> = new Map();
   private toolUseIdToProposalId: Map<MessageId, string> = new Map();
   private currentPromptRef: MessageId | null = null;
 
@@ -98,6 +102,9 @@ export class ClaudeAgent {
     // Initialize git commit tool handler
     this.gitCommitToolHandler = createGitCommitToolHandler();
 
+    // Initialize notebook tool handler
+    this.notebookToolHandler = createNotebookToolHandler();
+
     // Initialize MCP manager
     this.mcpManager = new MCPManager();
 
@@ -147,6 +154,16 @@ export class ClaudeAgent {
 
   private async joinSession(sessionId: SessionId): Promise<void> {
     this.sessionId = sessionId;
+
+    // Ensure session working directory exists before any operations
+    // This is critical for git operations and file management
+    const sessionWorkDir = `/tmp/pvp-git/${sessionId}`;
+    try {
+      await fs.mkdir(sessionWorkDir, { recursive: true });
+      logger.info({ sessionWorkDir }, "Created session working directory");
+    } catch (error) {
+      logger.warn({ error, sessionWorkDir }, "Failed to create session working directory");
+    }
 
     const joinMsg = createMessage("session.join", sessionId, this.participantId, {
       participant: createParticipantInfo(
@@ -417,6 +434,13 @@ export class ClaudeAgent {
     if (this.gitCommitProposals.has(tool_proposal)) {
       logger.info({ toolProposal: tool_proposal, approvers: approved_by }, "Executing approved git commit");
       await this.executeGitCommit(tool_proposal);
+      return;
+    }
+
+    // Check if this is a notebook execution proposal
+    if (this.notebookProposals.has(tool_proposal)) {
+      logger.info({ toolProposal: tool_proposal, approvers: approved_by }, "Executing approved notebook");
+      await this.executeNotebook(tool_proposal);
       return;
     }
 
@@ -841,6 +865,27 @@ export class ClaudeAgent {
       }
     });
 
+    // Add notebook_execute tool for Jupyter notebook execution and HTML rendering
+    tools.push({
+      name: "notebook_execute",
+      description: "Execute a Jupyter notebook and convert it to HTML for rendering. The executed notebook output will be broadcast as a context.update message with key 'notebook:rendered:{filename}' so pvp.codes can display it. Requires human approval due to arbitrary code execution.",
+      input_schema: {
+        type: "object",
+        properties: {
+          notebook_path: {
+            type: "string",
+            description: "Path to the .ipynb notebook file (absolute or relative to working directory)"
+          },
+          output_format: {
+            type: "string",
+            enum: ["html", "markdown", "pdf"],
+            description: "Output format for the converted notebook (default: html)"
+          }
+        },
+        required: ["notebook_path"]
+      }
+    });
+
     // Add MCP tools with namespaced names
     for (const mcpTool of this.mcpManager.getAllTools()) {
       tools.push({
@@ -1176,6 +1221,133 @@ export class ClaudeAgent {
     } catch (error) {
       logger.error({ error, proposalId }, "Git commit execution failed");
       this.gitCommitProposals.delete(proposalId);
+
+      this.updateBatchResult(proposalId, {
+        success: false,
+        output: "",
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  }
+
+
+  /**
+   * Propose a notebook execution to the session
+   */
+  public async proposeNotebookExecute(
+    notebookPath: string,
+    outputFormat: NotebookOutputFormat = "html",
+    toolUseId?: string
+  ): Promise<MessageId> {
+    if (!this.sessionId) {
+      throw new Error("Not connected to a session");
+    }
+
+    try {
+      // Resolve the notebook path relative to working directory
+      const resolvedPath = this.resolveFilePath(notebookPath);
+
+      const proposalMsg = this.notebookToolHandler.proposeNotebookExecute(
+        resolvedPath,
+        outputFormat,
+        this.sessionId,
+        this.participantId
+      );
+
+      // Store the proposal for later execution
+      this.notebookProposals.set(proposalMsg.id, {
+        notebookPath: resolvedPath,
+        outputFormat,
+        toolUseId: toolUseId || "",
+      });
+
+      // Track Claude's tool use ID if provided
+      if (toolUseId) {
+        this.toolUseIdToProposalId.set(proposalMsg.id, toolUseId);
+
+        // Update batch with proposal ID
+        if (this.pendingToolBatch) {
+          const batchEntry = this.pendingToolBatch.tools.get(toolUseId);
+          if (batchEntry) {
+            batchEntry.proposalId = proposalMsg.id;
+          }
+        }
+      }
+
+      // Send the proposal
+      this.client.send(proposalMsg);
+
+      logger.info({
+        proposalId: proposalMsg.id,
+        toolUseId,
+        notebookPath: resolvedPath,
+        outputFormat,
+      }, "Proposed notebook execution");
+
+      return proposalMsg.id;
+    } catch (error) {
+      logger.error({ error, notebookPath }, "Failed to propose notebook execution");
+      throw error;
+    }
+  }
+
+  /**
+   * Execute a notebook after approval
+   */
+  private async executeNotebook(proposalId: MessageId): Promise<void> {
+    if (!this.sessionId) return;
+
+    const proposal = this.notebookProposals.get(proposalId);
+    if (!proposal) {
+      logger.warn({ proposalId }, "Notebook proposal not found");
+      return;
+    }
+
+    const { notebookPath, outputFormat } = proposal;
+
+    logger.info({
+      proposalId,
+      notebookPath,
+      outputFormat,
+    }, "Executing approved notebook");
+
+    try {
+      let result: { success: boolean; output: string; error?: string } | null = null;
+
+      await this.notebookToolHandler.executeNotebook(
+        proposalId,
+        notebookPath,
+        outputFormat,
+        this.sessionId,
+        this.participantId,
+        (msg: AnyMessage) => {
+          this.client.send(msg);
+
+          // Capture tool.result message
+          if (msg.type === "tool.result") {
+            const payload = msg.payload as { success: boolean; result?: unknown; error?: string };
+            result = {
+              success: payload.success,
+              output: typeof payload.result === "string"
+                ? payload.result
+                : JSON.stringify(payload.result || {}),
+              error: payload.error,
+            };
+          }
+        },
+        this.workingDirectory ?? undefined
+      );
+
+      // Clean up
+      this.notebookProposals.delete(proposalId);
+
+      // Update batch with result
+      if (result) {
+        this.updateBatchResult(proposalId, result);
+      }
+    } catch (error) {
+      logger.error({ error, proposalId }, "Notebook execution failed");
+      this.notebookProposals.delete(proposalId);
 
       this.updateBatchResult(proposalId, {
         success: false,
@@ -1739,6 +1911,18 @@ export class ClaudeAgent {
           }
           logger.info({ type: input.type, description: input.description, toolUseId: toolUse.id }, "Claude requested git commit");
           await this.proposeGitCommit(input, toolUse.id);
+        } else if (toolUse.name === "notebook_execute") {
+          const input = toolUse.input as {
+            notebook_path: string;
+            output_format?: NotebookOutputFormat;
+          };
+          if (!input.notebook_path) {
+            logger.error({ toolUseId: toolUse.id }, "Notebook execute input missing notebook_path field");
+            this.markToolFailed(toolUse.id, "Missing notebook_path");
+            continue;
+          }
+          logger.info({ notebookPath: input.notebook_path, outputFormat: input.output_format || "html", toolUseId: toolUse.id }, "Claude requested notebook execution");
+          await this.proposeNotebookExecute(input.notebook_path, input.output_format || "html", toolUse.id);
         } else if (this.mcpManager.isMCPTool(toolUse.name)) {
           logger.info({ tool: toolUse.name, toolUseId: toolUse.id }, "Claude requested MCP tool execution");
           await this.proposeMCPTool(toolUse.name, toolUse.input as Record<string, unknown>, toolUse.id);
