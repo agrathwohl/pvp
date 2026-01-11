@@ -32,6 +32,14 @@ import type {
 const NOTEBOOK_EXECUTION_TIMEOUT = 300_000; // 5 minutes for long-running notebooks
 const NOTEBOOK_MAX_BUFFER = 50 * 1024 * 1024; // 50MB for notebooks with large outputs
 
+// Common venv jupyter paths to check (in order of preference)
+const VENV_JUPYTER_PATHS = [
+  ".venv/bin/jupyter",
+  "venv/bin/jupyter",
+  ".venv/Scripts/jupyter.exe",  // Windows
+  "venv/Scripts/jupyter.exe",   // Windows
+];
+
 export type NotebookOutputFormat = "html" | "markdown" | "pdf";
 
 export interface NotebookExecutionResult {
@@ -79,6 +87,23 @@ function isNotebookFile(filePath: string): boolean {
 }
 
 /**
+ * Find the jupyter executable - checks venv paths first, then falls back to system PATH
+ */
+async function findJupyterExecutable(workingDir: string): Promise<string> {
+  for (const venvPath of VENV_JUPYTER_PATHS) {
+    const fullPath = path.join(workingDir, venvPath);
+    try {
+      await fs.access(fullPath, fs.constants.X_OK);
+      return fullPath;  // Found executable jupyter in venv
+    } catch {
+      // Not found or not executable, try next
+    }
+  }
+  // Fall back to system PATH
+  return "jupyter";
+}
+
+/**
  * Get the output file path based on notebook path and format
  */
 function getOutputPath(notebookPath: string, format: NotebookOutputFormat): string {
@@ -90,6 +115,7 @@ function getOutputPath(notebookPath: string, format: NotebookOutputFormat): stri
  * Create a ShellCommand for jupyter nbconvert execution
  */
 function createNbconvertCommand(
+  jupyterPath: string,
   notebookPath: string,
   outputFormat: NotebookOutputFormat,
   workingDir?: string
@@ -103,7 +129,7 @@ function createNbconvertCommand(
   ];
 
   return {
-    command: "jupyter",
+    command: jupyterPath,
     args,
     category: "write",
     riskLevel: "high",
@@ -202,17 +228,20 @@ export function createNotebookToolHandler(): NotebookToolHandler {
       // Snapshot files before execution to detect changes (like shell-tool.ts)
       const beforeSnapshot = await snapshotDirectory(effectiveWorkDir);
 
+      // Find jupyter executable (check venv first, then system PATH)
+      const jupyterPath = await findJupyterExecutable(effectiveWorkDir);
+
       // Broadcast execution start
       const startMsg = createMessage("tool.output", sessionId, agentId, {
         tool_proposal: toolProposalId,
         stream: "stdout" as const,
-        text: `Executing notebook: ${notebookPath}\nOutput format: ${outputFormat}\n`,
+        text: `Executing notebook: ${notebookPath}\nUsing jupyter: ${jupyterPath}\nOutput format: ${outputFormat}\n`,
         complete: false,
       });
       broadcast(startMsg);
 
       // Create the shell command
-      const shellCmd = createNbconvertCommand(resolvedNotebookPath, outputFormat, effectiveWorkDir);
+      const shellCmd = createNbconvertCommand(jupyterPath, resolvedNotebookPath, outputFormat, effectiveWorkDir);
 
       let exitCode: number | null = null;
       let stdout = "";
