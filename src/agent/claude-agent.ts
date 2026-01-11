@@ -66,6 +66,7 @@ export class ClaudeAgent {
   // corresponding tool_result blocks in the next message
   private pendingToolBatch: {
     promptRef: MessageId;
+    hadRejection: boolean;  // If any tool was rejected, agent must stop after sending results
     tools: Map<string, {  // keyed by toolUseId
       toolUseId: string;
       toolName: string;
@@ -170,8 +171,8 @@ export class ClaudeAgent {
         this.participantId,
         this.agentName,
         "agent",
-        ["observer"],
-        ["prompt"]
+        ["navigator"],  // Agents are navigators - they help guide/assist
+        ["prompt", "add_context"]  // Agents need add_context to emit context.update/context.add
       ),
       supported_versions: [1],
     });
@@ -547,15 +548,17 @@ export class ClaudeAgent {
       ? message.payload.reason
       : `Gate timed out (${message.payload.approvals_received}/${message.payload.approvals_required} approvals)`;
 
-    logger.info({ proposalId, reason }, "Gate rejected, sending error to Claude");
+    logger.info({ proposalId, reason }, "Gate rejected - agent will stop after batch completes");
+
+    // CRITICAL: Mark batch as having a rejection - agent must stop after sending results
+    if (this.pendingToolBatch) {
+      this.pendingToolBatch.hadRejection = true;
+    }
 
     // Check if this is a shell tool proposal
     const shellProposal = this.toolProposals.get(proposalId);
     if (shellProposal) {
-      // Clean up proposal tracking
       this.toolProposals.delete(proposalId);
-
-      // Update batch with rejection error (don't send to Claude yet - wait for all tools)
       this.updateBatchResult(proposalId, {
         success: false,
         output: "",
@@ -567,10 +570,7 @@ export class ClaudeAgent {
     // Check if this is a file write proposal
     const fileWriteProposal = this.fileWriteProposals.get(proposalId);
     if (fileWriteProposal) {
-      // Clean up proposal tracking
       this.fileWriteProposals.delete(proposalId);
-
-      // Update batch with rejection error
       this.updateBatchResult(proposalId, {
         success: false,
         output: "",
@@ -582,10 +582,7 @@ export class ClaudeAgent {
     // Check if this is a file edit proposal
     const fileEditProposal = this.fileEditProposals.get(proposalId);
     if (fileEditProposal) {
-      // Clean up proposal tracking
       this.fileEditProposals.delete(proposalId);
-
-      // Update batch with rejection error
       this.updateBatchResult(proposalId, {
         success: false,
         output: "",
@@ -594,13 +591,22 @@ export class ClaudeAgent {
       return;
     }
 
+    // Check if this is a notebook proposal
+    const notebookProposal = this.notebookProposals.get(proposalId);
+    if (notebookProposal) {
+      this.notebookProposals.delete(proposalId);
+      this.updateBatchResult(proposalId, {
+        success: false,
+        output: "",
+        error: `Notebook execution "${notebookProposal.notebookPath}" rejected by human: ${reason}`,
+      });
+      return;
+    }
+
     // Check if this is an MCP tool proposal
     const mcpProposal = this.mcpToolProposals.get(proposalId);
     if (mcpProposal) {
-      // Clean up proposal tracking
       this.mcpToolProposals.delete(proposalId);
-
-      // Update batch with rejection error
       this.updateBatchResult(proposalId, {
         success: false,
         output: "",
@@ -1713,9 +1719,33 @@ export class ClaudeAgent {
       }
     }
 
-    // Clear the batch
+    // Capture batch state before clearing
     const promptRef = this.pendingToolBatch.promptRef;
+    const hadRejection = this.pendingToolBatch.hadRejection;
     this.pendingToolBatch = null;
+
+    // If ANY tool was rejected, agent must STOP and wait for new user prompt
+    if (hadRejection) {
+      logger.info("Batch had rejection - agent stopping, waiting for new user prompt");
+
+      // Still need to add results to history so conversation stays valid
+      this.conversationHistory.push({
+        role: "user",
+        content: toolResults,
+      });
+
+      // Send a notification that the agent is waiting
+      const responseEndMsg = createMessage(
+        "response.end",
+        this.sessionId,
+        this.participantId,
+        {
+          finish_reason: "interrupted",  // User rejected tool - agent interrupted
+        }
+      );
+      this.client.send(responseEndMsg);
+      return;  // STOP - do not call Claude again until new prompt
+    }
 
     try {
       // Send thinking start for processing tool results
@@ -1838,11 +1868,12 @@ export class ClaudeAgent {
   private createToolBatch(promptRef: MessageId, toolUses: ToolUseBlock[]): void {
     this.pendingToolBatch = {
       promptRef,
+      hadRejection: false,
       tools: new Map(),
     };
 
     for (const toolUse of toolUses) {
-      this.pendingToolBatch.tools.set(toolUse.id, {
+      this.pendingToolBatch!.tools.set(toolUse.id, {
         toolUseId: toolUse.id,
         toolName: toolUse.name,
         proposalId: null,
