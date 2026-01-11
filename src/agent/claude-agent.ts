@@ -871,10 +871,10 @@ export class ClaudeAgent {
       }
     });
 
-    // Add notebook_execute tool for Jupyter notebook execution and HTML rendering
+    // Add notebook_execute tool for Jupyter notebook execution
     tools.push({
       name: "notebook_execute",
-      description: "Execute a Jupyter notebook and convert it to HTML for rendering. The executed notebook output will be broadcast as a context.update message with key 'notebook:rendered:{filename}' so pvp.codes can display it. Requires human approval due to arbitrary code execution.",
+      description: "Execute a Jupyter notebook and return the executed .ipynb with outputs populated. The result is broadcast as context.add with key 'notebook:executed:{filename}' for notebook-viewer.tsx to render. Can also convert to html/markdown/pdf if specified. Requires human approval due to arbitrary code execution.",
       input_schema: {
         type: "object",
         properties: {
@@ -884,8 +884,8 @@ export class ClaudeAgent {
           },
           output_format: {
             type: "string",
-            enum: ["html", "markdown", "pdf"],
-            description: "Output format for the converted notebook (default: html)"
+            enum: ["notebook", "html", "markdown", "pdf"],
+            description: "Output format: 'notebook' (default) returns executed .ipynb with outputs, others convert to standalone files"
           }
         },
         required: ["notebook_path"]
@@ -1242,7 +1242,7 @@ export class ClaudeAgent {
    */
   public async proposeNotebookExecute(
     notebookPath: string,
-    outputFormat: NotebookOutputFormat = "html",
+    outputFormat: NotebookOutputFormat = "notebook",
     toolUseId?: string
   ): Promise<MessageId> {
     if (!this.sessionId) {
@@ -1952,8 +1952,8 @@ export class ClaudeAgent {
             this.markToolFailed(toolUse.id, "Missing notebook_path");
             continue;
           }
-          logger.info({ notebookPath: input.notebook_path, outputFormat: input.output_format || "html", toolUseId: toolUse.id }, "Claude requested notebook execution");
-          await this.proposeNotebookExecute(input.notebook_path, input.output_format || "html", toolUse.id);
+          logger.info({ notebookPath: input.notebook_path, outputFormat: input.output_format || "notebook", toolUseId: toolUse.id }, "Claude requested notebook execution");
+          await this.proposeNotebookExecute(input.notebook_path, input.output_format || "notebook", toolUse.id);
         } else if (this.mcpManager.isMCPTool(toolUse.name)) {
           logger.info({ tool: toolUse.name, toolUseId: toolUse.id }, "Claude requested MCP tool execution");
           await this.proposeMCPTool(toolUse.name, toolUse.input as Record<string, unknown>, toolUse.id);

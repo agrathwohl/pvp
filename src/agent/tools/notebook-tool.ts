@@ -40,14 +40,16 @@ const VENV_JUPYTER_PATHS = [
   "venv/Scripts/jupyter.exe",   // Windows
 ];
 
-export type NotebookOutputFormat = "html" | "markdown" | "pdf";
+// "notebook" = executed .ipynb with outputs (DEFAULT - works with notebook-viewer.tsx)
+// "html" | "markdown" | "pdf" = converted standalone files
+export type NotebookOutputFormat = "notebook" | "html" | "markdown" | "pdf";
 
 export interface NotebookExecutionResult {
   success: boolean;
   notebookPath: string;
   outputPath?: string;
   outputFormat: NotebookOutputFormat;
-  htmlContent?: string;
+  outputContent?: string;  // Executed notebook JSON or converted content
   error?: string;
   executionTime?: number;
 }
@@ -107,6 +109,10 @@ async function findJupyterExecutable(workingDir: string): Promise<string> {
  * Get the output file path based on notebook path and format
  */
 function getOutputPath(notebookPath: string, format: NotebookOutputFormat): string {
+  if (format === "notebook") {
+    // Output executed notebook with _executed suffix to preserve original
+    return notebookPath.replace(/\.ipynb$/, "_executed.ipynb");
+  }
   const ext = format === "markdown" ? "md" : format;
   return notebookPath.replace(/\.ipynb$/, `.${ext}`);
 }
@@ -118,6 +124,7 @@ function createNbconvertCommand(
   jupyterPath: string,
   notebookPath: string,
   outputFormat: NotebookOutputFormat,
+  outputPath: string,
   workingDir?: string
 ): ShellCommand {
   const args = [
@@ -125,8 +132,15 @@ function createNbconvertCommand(
     "--execute",
     "--to", outputFormat,
     "--allow-errors", // Continue execution even if cells error
-    notebookPath
   ];
+
+  // For notebook format, specify output filename to avoid overwriting original
+  if (outputFormat === "notebook") {
+    const outputBasename = path.basename(outputPath, ".ipynb");
+    args.push("--output", outputBasename);
+  }
+
+  args.push(notebookPath);
 
   return {
     command: jupyterPath,
@@ -241,7 +255,7 @@ export function createNotebookToolHandler(): NotebookToolHandler {
       broadcast(startMsg);
 
       // Create the shell command
-      const shellCmd = createNbconvertCommand(jupyterPath, resolvedNotebookPath, outputFormat, effectiveWorkDir);
+      const shellCmd = createNbconvertCommand(jupyterPath, resolvedNotebookPath, outputFormat, outputPath, effectiveWorkDir);
 
       let exitCode: number | null = null;
       let stdout = "";
@@ -317,9 +331,9 @@ export function createNotebookToolHandler(): NotebookToolHandler {
         }
 
         // Read the generated output file
-        let htmlContent: string | undefined;
+        let outputContent: string | undefined;
         try {
-          htmlContent = await fs.readFile(outputPath, "utf-8");
+          outputContent = await fs.readFile(outputPath, "utf-8");
         } catch (readError) {
           const error = readError instanceof Error ? readError.message : "Unknown read error";
           const errorDetail = `Failed to read output file: ${error}`;
@@ -343,31 +357,37 @@ export function createNotebookToolHandler(): NotebookToolHandler {
         const completeMsg = createMessage("tool.output", sessionId, agentId, {
           tool_proposal: toolProposalId,
           stream: "stdout" as const,
-          text: `\n✓ Notebook executed successfully\nOutput: ${outputPath} (${htmlContent.length} bytes)\n`,
+          text: `\n✓ Notebook executed successfully\nOutput: ${outputPath} (${outputContent.length} bytes)\n`,
           complete: true,
         });
         broadcast(completeMsg);
 
-        // CRITICAL: Emit context.update with the rendered HTML
-        // This allows pvp.codes to detect and render the notebook output
-        const notebookKey = `notebook:rendered:${path.basename(outputPath)}`;
-        const contextUpdateMsg = createMessage("context.update", sessionId, agentId, {
-          key: notebookKey,
-          new_content: htmlContent,
-          reason: `Notebook ${path.basename(notebookPath)} executed and converted to ${outputFormat}`,
-        });
-        broadcast(contextUpdateMsg);
+        // CRITICAL: Emit context.add with the executed notebook content
+        // This allows pvp.codes notebook-viewer.tsx to render the output
+        // NOTE: Must use context.add (not context.update) because this creates NEW context
+        const isNotebookFormat = outputFormat === "notebook";
+        const notebookKey = isNotebookFormat
+          ? `notebook:executed:${path.basename(notebookPath)}`  // For notebook-viewer.tsx
+          : `notebook:rendered:${path.basename(outputPath)}`;   // For HTML/PDF/MD viewers
 
-        // Also emit context.add for the output file path reference
-        // This provides metadata about where the file was saved
-        const contextAddMsg = createMessage("context.add", sessionId, agentId, {
-          key: `notebook:output_path:${path.basename(notebookPath)}`,
-          content: outputPath,
-          content_type: "text",
+        const contextAddContentMsg = createMessage("context.add", sessionId, agentId, {
+          key: notebookKey,
+          content_type: isNotebookFormat ? "structured" : "file",  // .ipynb is JSON
+          content: isNotebookFormat ? JSON.parse(outputContent) : outputContent,
           source: "notebook_execute",
-          tags: ["notebook", "output", outputFormat],
+          tags: ["notebook", isNotebookFormat ? "executed" : "rendered", outputFormat],
         });
-        broadcast(contextAddMsg);
+        broadcast(contextAddContentMsg);
+
+        // Also emit the output file path for reference
+        const contextAddPathMsg = createMessage("context.add", sessionId, agentId, {
+          key: `notebook:output_path:${path.basename(notebookPath)}`,
+          content_type: "text",
+          content: outputPath,
+          source: "notebook_execute",
+          tags: ["notebook", "output_path", outputFormat],
+        });
+        broadcast(contextAddPathMsg);
 
         // Send success result
         const resultMsg = createMessage("tool.result", sessionId, agentId, {
@@ -377,7 +397,7 @@ export function createNotebookToolHandler(): NotebookToolHandler {
             notebookPath: resolvedNotebookPath,
             outputPath,
             outputFormat,
-            outputSize: htmlContent.length,
+            outputSize: outputContent.length,
             executionTime,
           },
           duration_ms: executionTime,
@@ -389,7 +409,7 @@ export function createNotebookToolHandler(): NotebookToolHandler {
           notebookPath: resolvedNotebookPath,
           outputPath,
           outputFormat,
-          htmlContent,
+          outputContent,
           executionTime,
         };
 

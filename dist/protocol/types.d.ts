@@ -65,7 +65,7 @@ export type ParticipantAnnouncePayload = {
 };
 export type Role = "driver" | "navigator" | "adversary" | "observer" | "approver" | "admin";
 export type Capability = "prompt" | "approve" | "interrupt" | "fork" | "add_context" | "manage_participants" | "end_session";
-export type TransportType = "websocket" | "mcp" | "t140" | "http" | "stdio";
+export type TransportType = "websocket" | "mcp" | "http" | "stdio";
 export type ParticipantRoleChangePayload = {
     participant: ParticipantId;
     old_roles: Role[];

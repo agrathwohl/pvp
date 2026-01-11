@@ -1,3 +1,4 @@
+import { type NotebookOutputFormat } from "./tools/notebook-tool.js";
 import { type MCPServerConfig } from "./mcp/index.js";
 import type { SessionId, MessageId } from "../protocol/types.js";
 export interface ClaudeAgentConfig {
@@ -26,6 +27,8 @@ export declare class ClaudeAgent {
     private fileWriteProposals;
     private fileEditProposals;
     private gitCommitProposals;
+    private notebookToolHandler;
+    private notebookProposals;
     private toolUseIdToProposalId;
     private currentPromptRef;
     private mcpManager;
@@ -83,6 +86,14 @@ export declare class ClaudeAgent {
      * Execute an approved git commit
      */
     private executeGitCommit;
+    /**
+     * Propose a notebook execution to the session
+     */
+    proposeNotebookExecute(notebookPath: string, outputFormat?: NotebookOutputFormat, toolUseId?: string): Promise<MessageId>;
+    /**
+     * Execute a notebook after approval
+     */
+    private executeNotebook;
     /**
      * Propose an MCP tool for execution through the PVP gate system
      */

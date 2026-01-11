@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import * as fs from "fs/promises";
 import path from "path";
 import { WebSocketClient } from "../transports/websocket.js";
 import { createMessage } from "../protocol/messages.js";
@@ -9,6 +10,7 @@ import { createShellToolHandler } from "./tools/shell-tool.js";
 import { categorizeCommand } from "./tools/shell-executor.js";
 import { createFileToolHandler } from "./tools/file-tool.js";
 import { createGitCommitToolHandler } from "./tools/git-commit-tool.js";
+import { createNotebookToolHandler } from "./tools/notebook-tool.js";
 import { MCPManager } from "./mcp/index.js";
 export class ClaudeAgent {
     client;
@@ -27,6 +29,8 @@ export class ClaudeAgent {
     fileWriteProposals = new Map();
     fileEditProposals = new Map();
     gitCommitProposals = new Map();
+    notebookToolHandler;
+    notebookProposals = new Map();
     toolUseIdToProposalId = new Map();
     currentPromptRef = null;
     // MCP support
@@ -56,6 +60,8 @@ export class ClaudeAgent {
         this.fileToolHandler = createFileToolHandler();
         // Initialize git commit tool handler
         this.gitCommitToolHandler = createGitCommitToolHandler();
+        // Initialize notebook tool handler
+        this.notebookToolHandler = createNotebookToolHandler();
         // Initialize MCP manager
         this.mcpManager = new MCPManager();
         this.setupEventHandlers();
@@ -97,8 +103,20 @@ export class ClaudeAgent {
     }
     async joinSession(sessionId) {
         this.sessionId = sessionId;
+        // Ensure session working directory exists before any operations
+        // This is critical for git operations and file management
+        const sessionWorkDir = `/tmp/pvp-git/${sessionId}`;
+        try {
+            await fs.mkdir(sessionWorkDir, { recursive: true });
+            logger.info({ sessionWorkDir }, "Created session working directory");
+        }
+        catch (error) {
+            logger.warn({ error, sessionWorkDir }, "Failed to create session working directory");
+        }
         const joinMsg = createMessage("session.join", sessionId, this.participantId, {
-            participant: createParticipantInfo(this.participantId, this.agentName, "agent", ["observer"], ["prompt"]),
+            participant: createParticipantInfo(this.participantId, this.agentName, "agent", ["navigator"], // Agents are navigators - they help guide/assist
+            ["prompt", "add_context"] // Agents need add_context to emit context.update/context.add
+            ),
             supported_versions: [1],
         });
         this.client.send(joinMsg);
@@ -310,6 +328,12 @@ export class ClaudeAgent {
             await this.executeGitCommit(tool_proposal);
             return;
         }
+        // Check if this is a notebook execution proposal
+        if (this.notebookProposals.has(tool_proposal)) {
+            logger.info({ toolProposal: tool_proposal, approvers: approved_by }, "Executing approved notebook");
+            await this.executeNotebook(tool_proposal);
+            return;
+        }
         // Retrieve the shell tool proposal
         const proposal = this.toolProposals.get(tool_proposal);
         if (!proposal) {
@@ -339,7 +363,7 @@ export class ClaudeAgent {
                         error: msg.payload.error
                     };
                 }
-            });
+            }, this.workingDirectory ?? undefined);
         }
         catch (error) {
             // Send error result back to Claude
@@ -390,13 +414,15 @@ export class ClaudeAgent {
         const reason = message.type === "gate.reject"
             ? message.payload.reason
             : `Gate timed out (${message.payload.approvals_received}/${message.payload.approvals_required} approvals)`;
-        logger.info({ proposalId, reason }, "Gate rejected, sending error to Claude");
+        logger.info({ proposalId, reason }, "Gate rejected - agent will stop after batch completes");
+        // CRITICAL: Mark batch as having a rejection - agent must stop after sending results
+        if (this.pendingToolBatch) {
+            this.pendingToolBatch.hadRejection = true;
+        }
         // Check if this is a shell tool proposal
         const shellProposal = this.toolProposals.get(proposalId);
         if (shellProposal) {
-            // Clean up proposal tracking
             this.toolProposals.delete(proposalId);
-            // Update batch with rejection error (don't send to Claude yet - wait for all tools)
             this.updateBatchResult(proposalId, {
                 success: false,
                 output: "",
@@ -407,9 +433,7 @@ export class ClaudeAgent {
         // Check if this is a file write proposal
         const fileWriteProposal = this.fileWriteProposals.get(proposalId);
         if (fileWriteProposal) {
-            // Clean up proposal tracking
             this.fileWriteProposals.delete(proposalId);
-            // Update batch with rejection error
             this.updateBatchResult(proposalId, {
                 success: false,
                 output: "",
@@ -420,9 +444,7 @@ export class ClaudeAgent {
         // Check if this is a file edit proposal
         const fileEditProposal = this.fileEditProposals.get(proposalId);
         if (fileEditProposal) {
-            // Clean up proposal tracking
             this.fileEditProposals.delete(proposalId);
-            // Update batch with rejection error
             this.updateBatchResult(proposalId, {
                 success: false,
                 output: "",
@@ -430,12 +452,21 @@ export class ClaudeAgent {
             });
             return;
         }
+        // Check if this is a notebook proposal
+        const notebookProposal = this.notebookProposals.get(proposalId);
+        if (notebookProposal) {
+            this.notebookProposals.delete(proposalId);
+            this.updateBatchResult(proposalId, {
+                success: false,
+                output: "",
+                error: `Notebook execution "${notebookProposal.notebookPath}" rejected by human: ${reason}`,
+            });
+            return;
+        }
         // Check if this is an MCP tool proposal
         const mcpProposal = this.mcpToolProposals.get(proposalId);
         if (mcpProposal) {
-            // Clean up proposal tracking
             this.mcpToolProposals.delete(proposalId);
-            // Update batch with rejection error
             this.updateBatchResult(proposalId, {
                 success: false,
                 output: "",
@@ -650,6 +681,26 @@ export class ClaudeAgent {
                     }
                 },
                 required: ["type", "description"]
+            }
+        });
+        // Add notebook_execute tool for Jupyter notebook execution
+        tools.push({
+            name: "notebook_execute",
+            description: "Execute a Jupyter notebook and return the executed .ipynb with outputs populated. The result is broadcast as context.add with key 'notebook:executed:{filename}' for notebook-viewer.tsx to render. Can also convert to html/markdown/pdf if specified. Requires human approval due to arbitrary code execution.",
+            input_schema: {
+                type: "object",
+                properties: {
+                    notebook_path: {
+                        type: "string",
+                        description: "Path to the .ipynb notebook file (absolute or relative to working directory)"
+                    },
+                    output_format: {
+                        type: "string",
+                        enum: ["notebook", "html", "markdown", "pdf"],
+                        description: "Output format: 'notebook' (default) returns executed .ipynb with outputs, others convert to standalone files"
+                    }
+                },
+                required: ["notebook_path"]
             }
         });
         // Add MCP tools with namespaced names
@@ -901,6 +952,99 @@ export class ClaudeAgent {
         catch (error) {
             logger.error({ error, proposalId }, "Git commit execution failed");
             this.gitCommitProposals.delete(proposalId);
+            this.updateBatchResult(proposalId, {
+                success: false,
+                output: "",
+                error: error instanceof Error ? error.message : "Unknown error",
+            });
+        }
+    }
+    /**
+     * Propose a notebook execution to the session
+     */
+    async proposeNotebookExecute(notebookPath, outputFormat = "notebook", toolUseId) {
+        if (!this.sessionId) {
+            throw new Error("Not connected to a session");
+        }
+        try {
+            // Resolve the notebook path relative to working directory
+            const resolvedPath = this.resolveFilePath(notebookPath);
+            const proposalMsg = this.notebookToolHandler.proposeNotebookExecute(resolvedPath, outputFormat, this.sessionId, this.participantId);
+            // Store the proposal for later execution
+            this.notebookProposals.set(proposalMsg.id, {
+                notebookPath: resolvedPath,
+                outputFormat,
+                toolUseId: toolUseId || "",
+            });
+            // Track Claude's tool use ID if provided
+            if (toolUseId) {
+                this.toolUseIdToProposalId.set(proposalMsg.id, toolUseId);
+                // Update batch with proposal ID
+                if (this.pendingToolBatch) {
+                    const batchEntry = this.pendingToolBatch.tools.get(toolUseId);
+                    if (batchEntry) {
+                        batchEntry.proposalId = proposalMsg.id;
+                    }
+                }
+            }
+            // Send the proposal
+            this.client.send(proposalMsg);
+            logger.info({
+                proposalId: proposalMsg.id,
+                toolUseId,
+                notebookPath: resolvedPath,
+                outputFormat,
+            }, "Proposed notebook execution");
+            return proposalMsg.id;
+        }
+        catch (error) {
+            logger.error({ error, notebookPath }, "Failed to propose notebook execution");
+            throw error;
+        }
+    }
+    /**
+     * Execute a notebook after approval
+     */
+    async executeNotebook(proposalId) {
+        if (!this.sessionId)
+            return;
+        const proposal = this.notebookProposals.get(proposalId);
+        if (!proposal) {
+            logger.warn({ proposalId }, "Notebook proposal not found");
+            return;
+        }
+        const { notebookPath, outputFormat } = proposal;
+        logger.info({
+            proposalId,
+            notebookPath,
+            outputFormat,
+        }, "Executing approved notebook");
+        try {
+            let result = null;
+            await this.notebookToolHandler.executeNotebook(proposalId, notebookPath, outputFormat, this.sessionId, this.participantId, (msg) => {
+                this.client.send(msg);
+                // Capture tool.result message
+                if (msg.type === "tool.result") {
+                    const payload = msg.payload;
+                    result = {
+                        success: payload.success,
+                        output: typeof payload.result === "string"
+                            ? payload.result
+                            : JSON.stringify(payload.result || {}),
+                        error: payload.error,
+                    };
+                }
+            }, this.workingDirectory ?? undefined);
+            // Clean up
+            this.notebookProposals.delete(proposalId);
+            // Update batch with result
+            if (result) {
+                this.updateBatchResult(proposalId, result);
+            }
+        }
+        catch (error) {
+            logger.error({ error, proposalId }, "Notebook execution failed");
+            this.notebookProposals.delete(proposalId);
             this.updateBatchResult(proposalId, {
                 success: false,
                 output: "",
@@ -1178,9 +1322,25 @@ export class ClaudeAgent {
                 this.toolUseIdToProposalId.delete(entry.proposalId);
             }
         }
-        // Clear the batch
+        // Capture batch state before clearing
         const promptRef = this.pendingToolBatch.promptRef;
+        const hadRejection = this.pendingToolBatch.hadRejection;
         this.pendingToolBatch = null;
+        // If ANY tool was rejected, agent must STOP and wait for new user prompt
+        if (hadRejection) {
+            logger.info("Batch had rejection - agent stopping, waiting for new user prompt");
+            // Still need to add results to history so conversation stays valid
+            this.conversationHistory.push({
+                role: "user",
+                content: toolResults,
+            });
+            // Send a notification that the agent is waiting
+            const responseEndMsg = createMessage("response.end", this.sessionId, this.participantId, {
+                finish_reason: "interrupted", // User rejected tool - agent interrupted
+            });
+            this.client.send(responseEndMsg);
+            return; // STOP - do not call Claude again until new prompt
+        }
         try {
             // Send thinking start for processing tool results
             const thinkingStartMsg = createMessage("thinking.start", this.sessionId, this.participantId, {
@@ -1266,6 +1426,7 @@ export class ClaudeAgent {
     createToolBatch(promptRef, toolUses) {
         this.pendingToolBatch = {
             promptRef,
+            hadRejection: false,
             tools: new Map(),
         };
         for (const toolUse of toolUses) {
@@ -1331,6 +1492,16 @@ export class ClaudeAgent {
                     }
                     logger.info({ type: input.type, description: input.description, toolUseId: toolUse.id }, "Claude requested git commit");
                     await this.proposeGitCommit(input, toolUse.id);
+                }
+                else if (toolUse.name === "notebook_execute") {
+                    const input = toolUse.input;
+                    if (!input.notebook_path) {
+                        logger.error({ toolUseId: toolUse.id }, "Notebook execute input missing notebook_path field");
+                        this.markToolFailed(toolUse.id, "Missing notebook_path");
+                        continue;
+                    }
+                    logger.info({ notebookPath: input.notebook_path, outputFormat: input.output_format || "notebook", toolUseId: toolUse.id }, "Claude requested notebook execution");
+                    await this.proposeNotebookExecute(input.notebook_path, input.output_format || "notebook", toolUse.id);
                 }
                 else if (this.mcpManager.isMCPTool(toolUse.name)) {
                     logger.info({ tool: toolUse.name, toolUseId: toolUse.id }, "Claude requested MCP tool execution");
