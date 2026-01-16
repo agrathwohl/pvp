@@ -12,6 +12,7 @@ import { createFileToolHandler } from "./tools/file-tool.js";
 import { createGitCommitToolHandler } from "./tools/git-commit-tool.js";
 import { createNotebookToolHandler } from "./tools/notebook-tool.js";
 import { createNpmToolHandler } from "./tools/npm-tool.js";
+import { createTasksToolHandler, TASKS_CONTEXT_KEY } from "./tools/tasks-tool.js";
 import { MCPManager } from "./mcp/index.js";
 export class ClaudeAgent {
     client;
@@ -35,6 +36,9 @@ export class ClaudeAgent {
     notebookProposals = new Map();
     npmToolHandler;
     npmProposals = new Map();
+    tasksToolHandler;
+    tasksProposals = new Map();
+    strictMode = false;
     toolUseIdToProposalId = new Map();
     currentPromptRef = null;
     // MCP support
@@ -68,6 +72,10 @@ export class ClaudeAgent {
         this.notebookToolHandler = createNotebookToolHandler();
         // Initialize npm tool handler
         this.npmToolHandler = createNpmToolHandler();
+        // Initialize tasks tool handler
+        this.tasksToolHandler = createTasksToolHandler();
+        // Initialize strict mode
+        this.strictMode = config.strictMode || false;
         // Initialize MCP manager
         this.mcpManager = new MCPManager();
         this.setupEventHandlers();
@@ -267,6 +275,23 @@ export class ClaudeAgent {
                             }
                         }
                     }
+                    // Check for tasks context restoration
+                    if (message.payload.key === TASKS_CONTEXT_KEY) {
+                        try {
+                            const content = message.payload.content;
+                            if (content && typeof content === "object") {
+                                const tasksState = content;
+                                this.tasksToolHandler.restoreState(tasksState);
+                                logger.info({
+                                    taskCount: tasksState.tasks?.length || 0,
+                                    hasGoal: !!tasksState.goal
+                                }, "Restored tasks from session context");
+                            }
+                        }
+                        catch (err) {
+                            logger.error({ err }, "Failed to restore tasks from session context");
+                        }
+                    }
                     break;
                 default:
                     // Log other message types for debugging
@@ -324,6 +349,19 @@ export class ClaudeAgent {
         });
         this.client.send(responseStartMsg);
         try {
+            // Inject strict mode context if enabled
+            const strictModeContext = this.getStrictModeContext();
+            if (strictModeContext && this.conversationHistory.length === 0) {
+                // Add strict mode context as first system-like user message
+                this.conversationHistory.push({
+                    role: "user",
+                    content: strictModeContext
+                });
+                this.conversationHistory.push({
+                    role: "assistant",
+                    content: "Understood. I am operating in STRICT MODE and will ensure all actions align with the defined session goals and tasks."
+                });
+            }
             // Add user message to history
             this.conversationHistory.push({
                 role: "user",
@@ -431,6 +469,12 @@ export class ClaudeAgent {
         if (this.npmProposals.has(tool_proposal)) {
             logger.info({ toolProposal: tool_proposal, approvers: approved_by }, "Executing approved npm operation");
             await this.executeNpm(tool_proposal);
+            return;
+        }
+        // Check if this is a tasks operation proposal
+        if (this.tasksProposals.has(tool_proposal)) {
+            logger.info({ toolProposal: tool_proposal, approvers: approved_by }, "Executing tasks operation");
+            await this.executeTasks(tool_proposal);
             return;
         }
         // Retrieve the shell tool proposal
@@ -846,6 +890,48 @@ export class ClaudeAgent {
                         type: "string",
                         enum: ["npm", "yarn", "bun", "pnpm"],
                         description: "Package manager (auto-detected from lockfile if not specified)"
+                    }
+                },
+                required: ["operation"]
+            }
+        });
+        // Add tasks tool for session task/goal management
+        tools.push({
+            name: "tasks",
+            description: "Manage session tasks and goals. Track what needs to be done, update progress, and maintain awareness of the session objective. Use this when prompters inform you of goals or tasks to complete. Tasks are persisted to the session and survive agent reconnections.",
+            input_schema: {
+                type: "object",
+                properties: {
+                    operation: {
+                        type: "string",
+                        enum: ["add", "update", "complete", "remove", "list", "clear", "set_goal", "get_goal"],
+                        description: "Operation: add (new task), update (modify task), complete (mark done), remove (delete), list (show all), clear (remove all), set_goal (session objective), get_goal (current objective)"
+                    },
+                    title: {
+                        type: "string",
+                        description: "Task title (required for add operation)"
+                    },
+                    description: {
+                        type: "string",
+                        description: "Optional task description"
+                    },
+                    task_id: {
+                        type: "string",
+                        description: "Task ID (required for update/complete/remove operations)"
+                    },
+                    status: {
+                        type: "string",
+                        enum: ["pending", "in_progress", "completed"],
+                        description: "Task status (for update operation)"
+                    },
+                    priority: {
+                        type: "string",
+                        enum: ["low", "medium", "high"],
+                        description: "Task priority (default: medium)"
+                    },
+                    goal: {
+                        type: "string",
+                        description: "Session goal text (required for set_goal operation)"
                     }
                 },
                 required: ["operation"]
@@ -1296,6 +1382,170 @@ export class ClaudeAgent {
         }
     }
     /**
+     * Get the current session tasks and goals context summary
+     * Returns a markdown-formatted string describing the session objective and task status
+     */
+    getTasksContextSummary() {
+        return this.tasksToolHandler.getContextSummary();
+    }
+    /**
+     * Check if strict mode is enabled
+     */
+    isStrictMode() {
+        return this.strictMode;
+    }
+    /**
+     * Validate that work aligns with session tasks (for strict mode)
+     * Returns validation result with reason
+     */
+    validateAgainstTasks() {
+        const state = this.tasksToolHandler.getState();
+        // No goal and no tasks - nothing to validate against
+        if (!state.goal && state.tasks.length === 0) {
+            return {
+                valid: false,
+                reason: "STRICT MODE: No session goal or tasks defined. Use the 'tasks' tool to set a goal or add tasks before proceeding.",
+            };
+        }
+        // Check for incomplete tasks (in_progress or pending)
+        const activeTasks = state.tasks.filter(t => t.status !== "completed");
+        if (activeTasks.length > 0) {
+            return { valid: true, reason: `Working towards ${activeTasks.length} active task(s)` };
+        }
+        // Has goal but all tasks completed
+        if (state.goal) {
+            return { valid: true, reason: `Session goal: "${state.goal.goal}"` };
+        }
+        return {
+            valid: false,
+            reason: "STRICT MODE: All tasks completed. Set new tasks or a new goal to continue.",
+        };
+    }
+    /**
+     * Get strict mode context for system prompt injection
+     * Returns context that helps Claude understand and work within strict mode constraints
+     */
+    getStrictModeContext() {
+        if (!this.strictMode)
+            return null;
+        const state = this.tasksToolHandler.getState();
+        const lines = [
+            "## STRICT MODE ACTIVE",
+            "",
+            "You are operating in STRICT MODE. All responses and tool usage must align with the session's defined tasks and goals.",
+            "",
+        ];
+        if (state.goal) {
+            lines.push(`**Session Goal:** ${state.goal.goal}`);
+            lines.push("");
+        }
+        const activeTasks = state.tasks.filter(t => t.status !== "completed");
+        if (activeTasks.length > 0) {
+            lines.push("**Active Tasks:**");
+            for (const task of activeTasks) {
+                const status = task.status === "in_progress" ? "🔄" : "⏳";
+                lines.push(`- ${status} [${task.priority}] ${task.title} (${task.id})`);
+            }
+            lines.push("");
+        }
+        if (!state.goal && activeTasks.length === 0) {
+            lines.push("⚠️ **WARNING:** No goal or tasks defined. You must first use the 'tasks' tool to:");
+            lines.push("- Set a session goal with: `set_goal`");
+            lines.push("- Add tasks with: `add`");
+            lines.push("");
+        }
+        lines.push("Before executing any action, verify it serves one of the defined tasks or the session goal.");
+        return lines.join("\n");
+    }
+    /**
+     * Propose a tasks operation for session goal/task management
+     */
+    async proposeTasksOperation(args, toolUseId) {
+        if (!this.sessionId) {
+            throw new Error("Not connected to a session");
+        }
+        try {
+            const proposalMsg = this.tasksToolHandler.proposeTasksOperation(args, this.sessionId, this.participantId);
+            // Store the proposal for later execution
+            this.tasksProposals.set(proposalMsg.id, {
+                args,
+                toolUseId: toolUseId || "",
+            });
+            // Track Claude's tool use ID if provided
+            if (toolUseId) {
+                this.toolUseIdToProposalId.set(proposalMsg.id, toolUseId);
+                // Update batch with proposal ID
+                if (this.pendingToolBatch) {
+                    const batchEntry = this.pendingToolBatch.tools.get(toolUseId);
+                    if (batchEntry) {
+                        batchEntry.proposalId = proposalMsg.id;
+                    }
+                }
+            }
+            // Send the proposal
+            this.client.send(proposalMsg);
+            logger.info({
+                proposalId: proposalMsg.id,
+                toolUseId,
+                operation: args.operation,
+            }, "Proposed tasks operation");
+            return proposalMsg.id;
+        }
+        catch (error) {
+            logger.error({ error, operation: args.operation }, "Failed to propose tasks operation");
+            throw error;
+        }
+    }
+    /**
+     * Execute an approved tasks operation
+     */
+    async executeTasks(proposalId) {
+        if (!this.sessionId)
+            return;
+        const proposal = this.tasksProposals.get(proposalId);
+        if (!proposal) {
+            logger.warn({ proposalId }, "Tasks proposal not found");
+            return;
+        }
+        const { args } = proposal;
+        logger.info({
+            proposalId,
+            operation: args.operation,
+        }, "Executing tasks operation");
+        try {
+            let result = null;
+            await this.tasksToolHandler.executeTasksOperation(proposalId, args, this.sessionId, this.participantId, (msg) => {
+                this.client.send(msg);
+                // Capture tool.result message
+                if (msg.type === "tool.result") {
+                    const payload = msg.payload;
+                    result = {
+                        success: payload.success,
+                        output: typeof payload.result === "string"
+                            ? payload.result
+                            : JSON.stringify(payload.result || {}),
+                        error: payload.error,
+                    };
+                }
+            });
+            // Clean up
+            this.tasksProposals.delete(proposalId);
+            // Update batch with result
+            if (result) {
+                this.updateBatchResult(proposalId, result);
+            }
+        }
+        catch (error) {
+            logger.error({ error, proposalId }, "Tasks operation failed");
+            this.tasksProposals.delete(proposalId);
+            this.updateBatchResult(proposalId, {
+                success: false,
+                output: "",
+                error: error instanceof Error ? error.message : "Unknown error",
+            });
+        }
+    }
+    /**
      * Propose an MCP tool for execution through the PVP gate system
      */
     async proposeMCPTool(namespacedName, args, toolUseId) {
@@ -1687,6 +1937,26 @@ export class ClaudeAgent {
      * Propose all tools in a batch
      */
     async proposeToolBatch(toolUses) {
+        // Strict mode enforcement: validate that goals/tasks exist before executing non-tasks tools
+        if (this.strictMode) {
+            const validation = this.validateAgainstTasks();
+            if (!validation.valid) {
+                // Check if any tool is NOT the tasks tool - those need to be blocked
+                for (const toolUse of toolUses) {
+                    if (toolUse.name !== "tasks") {
+                        logger.warn({ toolName: toolUse.name, toolUseId: toolUse.id, reason: validation.reason }, "Strict mode: blocking tool without session tasks/goals");
+                        this.markToolFailed(toolUse.id, validation.reason);
+                    }
+                }
+                // Filter to only tasks tool operations (which are always allowed)
+                const tasksOnlyTools = toolUses.filter(t => t.name === "tasks");
+                if (tasksOnlyTools.length === 0) {
+                    return; // All tools blocked, nothing to do
+                }
+                // Continue with only the tasks tool(s)
+                toolUses = tasksOnlyTools;
+            }
+        }
         for (const toolUse of toolUses) {
             try {
                 // Validate input exists
@@ -1755,6 +2025,16 @@ export class ClaudeAgent {
                     }
                     logger.info({ operation: input.operation, args: input.args, packageManager: input.package_manager, toolUseId: toolUse.id }, "Claude requested npm operation");
                     await this.proposeNpmOperation(input.operation, input.args || [], input.package_manager, toolUse.id);
+                }
+                else if (toolUse.name === "tasks") {
+                    const input = toolUse.input;
+                    if (!input.operation) {
+                        logger.error({ toolUseId: toolUse.id }, "Tasks input missing operation field");
+                        this.markToolFailed(toolUse.id, "Missing operation");
+                        continue;
+                    }
+                    logger.info({ operation: input.operation, toolUseId: toolUse.id }, "Claude requested tasks operation");
+                    await this.proposeTasksOperation(input, toolUse.id);
                 }
                 else if (this.mcpManager.isMCPTool(toolUse.name)) {
                     logger.info({ tool: toolUse.name, toolUseId: toolUse.id }, "Claude requested MCP tool execution");

@@ -1,5 +1,6 @@
 import { type NotebookOutputFormat } from "./tools/notebook-tool.js";
 import { type NpmOperation, type PackageManager } from "./tools/npm-tool.js";
+import { type TaskOperationArgs } from "./tools/tasks-tool.js";
 import { type MCPServerConfig } from "./mcp/index.js";
 import type { SessionId, MessageId } from "../protocol/types.js";
 export interface ClaudeAgentConfig {
@@ -10,6 +11,11 @@ export interface ClaudeAgentConfig {
     apiKey?: string;
     /** Local working directory path. If set, ignores server-provided path (for remote connections) */
     localWorkDir?: string;
+    /**
+     * Strict mode: requires all prompts and tool executions to align with session tasks.
+     * When enabled, the agent will validate that work is in pursuit of defined tasks/goals.
+     */
+    strictMode?: boolean;
 }
 export declare class ClaudeAgent {
     private client;
@@ -33,6 +39,9 @@ export declare class ClaudeAgent {
     private notebookProposals;
     private npmToolHandler;
     private npmProposals;
+    private tasksToolHandler;
+    private tasksProposals;
+    private strictMode;
     private toolUseIdToProposalId;
     private currentPromptRef;
     private mcpManager;
@@ -111,6 +120,36 @@ export declare class ClaudeAgent {
      * Execute an npm operation after approval
      */
     private executeNpm;
+    /**
+     * Get the current session tasks and goals context summary
+     * Returns a markdown-formatted string describing the session objective and task status
+     */
+    getTasksContextSummary(): string;
+    /**
+     * Check if strict mode is enabled
+     */
+    isStrictMode(): boolean;
+    /**
+     * Validate that work aligns with session tasks (for strict mode)
+     * Returns validation result with reason
+     */
+    validateAgainstTasks(): {
+        valid: boolean;
+        reason: string;
+    };
+    /**
+     * Get strict mode context for system prompt injection
+     * Returns context that helps Claude understand and work within strict mode constraints
+     */
+    getStrictModeContext(): string | null;
+    /**
+     * Propose a tasks operation for session goal/task management
+     */
+    proposeTasksOperation(args: TaskOperationArgs, toolUseId?: string): Promise<MessageId>;
+    /**
+     * Execute an approved tasks operation
+     */
+    private executeTasks;
     /**
      * Propose an MCP tool for execution through the PVP gate system
      */
