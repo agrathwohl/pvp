@@ -2476,6 +2476,28 @@ export class ClaudeAgent {
    * Propose all tools in a batch
    */
   private async proposeToolBatch(toolUses: ToolUseBlock[]): Promise<void> {
+    // Strict mode enforcement: validate that goals/tasks exist before executing non-tasks tools
+    if (this.strictMode) {
+      const validation = this.validateAgainstTasks();
+      if (!validation.valid) {
+        // Check if any tool is NOT the tasks tool - those need to be blocked
+        for (const toolUse of toolUses) {
+          if (toolUse.name !== "tasks") {
+            logger.warn({ toolName: toolUse.name, toolUseId: toolUse.id, reason: validation.reason },
+              "Strict mode: blocking tool without session tasks/goals");
+            this.markToolFailed(toolUse.id, validation.reason);
+          }
+        }
+        // Filter to only tasks tool operations (which are always allowed)
+        const tasksOnlyTools = toolUses.filter(t => t.name === "tasks");
+        if (tasksOnlyTools.length === 0) {
+          return; // All tools blocked, nothing to do
+        }
+        // Continue with only the tasks tool(s)
+        toolUses = tasksOnlyTools;
+      }
+    }
+
     for (const toolUse of toolUses) {
       try {
         // Validate input exists
