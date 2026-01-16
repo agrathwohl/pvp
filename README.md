@@ -31,6 +31,8 @@ PVP is NOT a chatbot. It's a coordination layer where multiple humans and AI age
 - ✅ Terminal UI (TUI) client
 - ✅ Structured logging and monitoring
 - ✅ **Decision tracking** - Git-based audit trail with automatic commit metadata
+- ✅ **Session tasks** - Goal and task tracking with session persistence
+- ✅ **Strict mode** - Validate agent actions against session tasks/goals
 
 ## Installation
 
@@ -127,6 +129,7 @@ pvp-agent \
 | `-k, --api-key <key>` | Anthropic API key | `$ANTHROPIC_API_KEY` |
 | `-l, --local [path]` | Use local working directory | (disabled) |
 | `--mcp-config <file>` | MCP servers config file | (none) |
+| `--strict` | Enable strict mode (validate against tasks) | (disabled) |
 
 **Important**: `pvp-agent` uses Bun runtime. If you see `Cannot find package "bun"`, ensure Bun is installed and in your PATH.
 
@@ -166,6 +169,14 @@ const agent = await startAgent({
   url: "ws://localhost:3000",
   session: "session-id",
   apiKey: process.env.ANTHROPIC_API_KEY,
+});
+
+// With strict mode enabled
+const strictAgent = await startAgent({
+  url: "ws://localhost:3000",
+  session: "session-id",
+  apiKey: process.env.ANTHROPIC_API_KEY,
+  strictMode: true, // Validate all actions against session tasks
 });
 ```
 
@@ -236,6 +247,58 @@ npm run agent -- \
 - Approval gates for risky operations
 - Real-time streaming output
 - Multi-turn conversation with tool results
+- Session-level task and goal tracking
+- Strict mode for task-aligned execution
+
+### Session Tasks
+
+The agent includes a built-in **tasks tool** for managing session goals and task lists:
+
+```bash
+# Example: Agent can manage tasks during a session
+# Tasks are persisted to the session and survive agent reconnections
+
+# Operations available:
+# - set_goal: Set the primary session objective
+# - get_goal: Retrieve current goal
+# - add: Create a new task
+# - update: Modify task properties
+# - complete: Mark task as done
+# - remove: Delete a task
+# - list: Show all tasks
+# - clear: Remove all tasks
+```
+
+**Task Properties**:
+| Property | Type | Description |
+|----------|------|-------------|
+| `id` | string | Unique task identifier |
+| `title` | string | Task name |
+| `description` | string | Optional details |
+| `status` | `pending` \| `in_progress` \| `completed` | Current state |
+| `priority` | `low` \| `medium` \| `high` | Task priority |
+| `created_at` | ISO timestamp | Creation time |
+| `updated_at` | ISO timestamp | Last modification |
+| `completed_at` | ISO timestamp | Completion time |
+
+### Strict Mode
+
+Enable strict mode to ensure all agent actions align with session tasks:
+
+```bash
+pvp-agent --url ws://localhost:3000 --session <id> --strict
+```
+
+When strict mode is enabled:
+- Agent validates prompts against session tasks before responding
+- Tool executions are checked for task alignment
+- Agent receives task context at the start of each interaction
+- Misaligned requests are flagged for review
+
+**Use Cases**:
+- Focused coding sessions with defined objectives
+- Project management with explicit deliverables
+- Supervised agent execution with guardrails
 
 ## Architecture
 
@@ -385,6 +448,13 @@ const contextMsg = createMessage("context.add", sessionId, participantId, {
   visible_to: ["agent_01"], // Optional: restrict visibility
 });
 ```
+
+**Reserved Context Keys**:
+| Key | Content Type | Description |
+|-----|--------------|-------------|
+| `session:tasks` | `structured` | Tasks and goals state (managed by tasks tool) |
+
+The `session:tasks` context is automatically managed by the agent's tasks tool. Frontend applications should subscribe to `context.add` messages with this key to display task state. See [Tasks Frontend Integration](./claudedocs/TASKS_FRONTEND_INTEGRATION.md) for implementation details.
 
 ## Examples
 
@@ -564,6 +634,8 @@ pm2 start dist/server/index.js --name pvp-server
 - [x] Unit tests (protocol, session, gates, decision tracking)
 - [x] Integration tests (MCP server integration)
 - [x] Decision tracking system (git-based audit trail)
+- [x] Session tasks and goals with persistence
+- [x] Strict mode for task-aligned agent execution
 - [ ] MCP transport support
 - [ ] Agent adapters (Claude, OpenAI, etc.)
 - [ ] Persistent session recovery
@@ -589,6 +661,7 @@ This is an implementation of the PVP specification. Contributions should:
 - **[Git Commit Protocol](./docs/GIT_COMMIT_PROTOCOL.md)** - Commit format specification
 - **[Git Hooks Guide](./src/git-hooks/README.md)** - Hook installation and usage
 - **[Testing Guide](./docs/TESTING.md)** - Test patterns and coverage
+- **[Tasks Frontend Integration](./claudedocs/TASKS_FRONTEND_INTEGRATION.md)** - Frontend implementation guide for tasks/goals
 
 ## License
 
