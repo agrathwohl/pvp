@@ -1,7 +1,8 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState } from "react";
 import { Box, Text, useInput, useApp } from "ink";
 import { useTUIStore } from "./store.js";
 import type { ParticipantId } from "../protocol/types.js";
+import type { TaskItem } from "./store.js";
 
 export function App({
   serverUrl,
@@ -45,7 +46,11 @@ export function App({
     setMode,
     toggleThinking,
     toggleDebug,
+    toggleTasks,
     fetchDecisionTracking,
+    tasksState,
+    tasksVisible,
+    joinNotifications,
   } = useTUIStore();
 
   const [targetAgent, setTargetAgent] = useState<ParticipantId>("");
@@ -119,6 +124,8 @@ export function App({
         toggleThinking();
       } else if (input === "d") {
         toggleDebug();
+      } else if (input === "g") {
+        toggleTasks();
       }
     } else if (mode === "compose") {
       if (key.escape) {
@@ -187,6 +194,62 @@ export function App({
                 <Text dimColor>Last: {decisionTracking.lastCommit.slice(0, 7)}</Text>
               </>
             )}
+          </Text>
+        </Box>
+      )}
+
+      {/* Tasks Panel - Session Goals and Tasks */}
+      {tasksVisible && (tasksState.goal || tasksState.tasks.length > 0) && (
+        <Box borderStyle="round" borderColor="magenta" paddingX={1} flexDirection="column">
+          <Text bold color="magenta">🎯 Session Tasks</Text>
+          {tasksState.goal && (
+            <Box marginTop={0}>
+              <Text>
+                <Text color="yellow" bold>Goal: </Text>
+                <Text>{tasksState.goal.goal}</Text>
+              </Text>
+            </Box>
+          )}
+          {tasksState.tasks.length > 0 && (
+            <Box flexDirection="column" marginTop={0}>
+              {tasksState.tasks.filter((t: TaskItem) => t.status === "in_progress").map((task: TaskItem) => (
+                <Text key={task.id}>
+                  <Text color="blue">▶ </Text>
+                  <Text color="blue">{task.title}</Text>
+                  <Text dimColor> [{task.priority}]</Text>
+                </Text>
+              ))}
+              {tasksState.tasks.filter((t: TaskItem) => t.status === "pending").map((task: TaskItem) => (
+                <Text key={task.id}>
+                  <Text color="gray">○ </Text>
+                  <Text>{task.title}</Text>
+                  <Text dimColor> [{task.priority}]</Text>
+                </Text>
+              ))}
+              {tasksState.tasks.filter((t: TaskItem) => t.status === "completed").slice(-3).map((task: TaskItem) => (
+                <Text key={task.id}>
+                  <Text color="green">✓ </Text>
+                  <Text dimColor strikethrough>{task.title}</Text>
+                </Text>
+              ))}
+            </Box>
+          )}
+        </Box>
+      )}
+
+      {/* Recent Join Notifications */}
+      {joinNotifications.length > 0 && (
+        <Box paddingX={1}>
+          <Text dimColor>
+            <Text color="green">👋 </Text>
+            {joinNotifications.slice(-3).map((n, i) => (
+              <Text key={n.participantId}>
+                {i > 0 && ", "}
+                <Text color={n.participantType === "agent" ? "cyan" : "yellow"}>{n.participantName}</Text>
+                <Text dimColor> ({n.participantType})</Text>
+              </Text>
+            ))}
+            <Text dimColor> joined</Text>
           </Text>
         </Box>
       )}
@@ -372,7 +435,7 @@ export function App({
           ) : (
             <>
               {" | "}
-              Keys: [p]rompt [t]hinking [d]ebug [Ctrl+C]quit
+              Keys: [p]rompt [t]hinking [d]ebug [g]oals [Ctrl+C]quit
             </>
           )}
         </Text>

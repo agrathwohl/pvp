@@ -14,6 +14,47 @@ import type {
 
 export type TUIMode = "stream" | "compose" | "gate" | "thinking";
 
+// Tasks state (from session:tasks context)
+export interface TaskItem {
+  id: string;
+  title: string;
+  description?: string;
+  status: "pending" | "in_progress" | "completed";
+  priority: "low" | "medium" | "high";
+  created_at: string;
+  updated_at: string;
+  completed_at?: string;
+}
+
+export interface SessionGoal {
+  goal: string;
+  set_at: string;
+  set_by: string;
+}
+
+export interface TasksState {
+  goal: SessionGoal | null;
+  tasks: TaskItem[];
+}
+
+// Participant join notification
+export interface JoinNotification {
+  participantId: string;
+  participantName: string;
+  participantType: "human" | "agent";
+  roles: string[];
+  timestamp: string;
+  agentResponse?: string;
+}
+
+// @Mention routing info
+export interface MentionRoutingInfo {
+  messageId: string;
+  wasIgnored: boolean;
+  targetParticipant?: string;
+  mentionContext?: string;
+}
+
 export interface ToolProposal {
   id: MessageId;
   tool_name: string;
@@ -68,6 +109,17 @@ export interface TUIState {
   // Decision tracking
   decisionTracking: DecisionTrackingState;
 
+  // Tasks state (from session:tasks context)
+  tasksState: TasksState;
+  tasksVisible: boolean;
+
+  // Join notifications
+  joinNotifications: JoinNotification[];
+
+  // @Mention routing tracking
+  mentionRouting: Map<MessageId, MentionRoutingInfo>;
+  lastIgnoredMention: MentionRoutingInfo | null;
+
   // UI state
   mode: TUIMode;
   draftPrompt: string;
@@ -92,6 +144,7 @@ export interface TUIState {
   raiseInterrupt: (urgency: InterruptUrgency, message: string, targetAgent?: ParticipantId) => void;
   toggleThinking: () => void;
   toggleDebug: () => void;
+  toggleTasks: () => void;
   setError: (error: string | null) => void;
   fetchDecisionTracking: () => Promise<void>;
 }
@@ -118,6 +171,14 @@ export const useTUIStore = create<TUIState>((set, get) => ({
     decisionSummary: null,
     lastCommit: null,
   },
+  tasksState: {
+    goal: null,
+    tasks: [],
+  },
+  tasksVisible: true,
+  joinNotifications: [],
+  mentionRouting: new Map(),
+  lastIgnoredMention: null,
   mode: "stream",
   draftPrompt: "",
   currentThinking: "",
@@ -207,17 +268,37 @@ export const useTUIStore = create<TUIState>((set, get) => ({
       // Handle different message types
       switch (message.type) {
         case "participant.announce":
-          state.participants.set(message.payload.id, {
-            info: message.payload,
-            presence: "active",
-            lastHeartbeat: new Date().toISOString(),
-            lastActive: new Date().toISOString(),
-          });
-          const updatedParticipants = new Map(state.participants);
-          set({
-            participants: updatedParticipants,
-            debugLog: [...newDebugLog, `ADDED: ${message.payload.name} (total: ${updatedParticipants.size})`].slice(-10)
-          });
+          {
+            const isNewParticipant = !state.participants.has(message.payload.id);
+            state.participants.set(message.payload.id, {
+              info: message.payload,
+              presence: "active",
+              lastHeartbeat: new Date().toISOString(),
+              lastActive: new Date().toISOString(),
+            });
+            const updatedParticipants = new Map(state.participants);
+
+            // Track join notification for new participants (not self)
+            if (isNewParticipant && message.payload.id !== state.participantId) {
+              const notification: JoinNotification = {
+                participantId: message.payload.id,
+                participantName: message.payload.name,
+                participantType: message.payload.type as "human" | "agent",
+                roles: message.payload.roles || [],
+                timestamp: message.ts,
+              };
+              set({
+                participants: updatedParticipants,
+                joinNotifications: [...state.joinNotifications, notification].slice(-10),
+                debugLog: [...newDebugLog, `JOINED: ${message.payload.name} (${message.payload.type})`].slice(-10)
+              });
+            } else {
+              set({
+                participants: updatedParticipants,
+                debugLog: [...newDebugLog, `ADDED: ${message.payload.name} (total: ${updatedParticipants.size})`].slice(-10)
+              });
+            }
+          }
           break;
 
         case "session.leave":
@@ -250,7 +331,19 @@ export const useTUIStore = create<TUIState>((set, get) => ({
             added_at: message.ts,
             updated_at: message.ts,
           });
-          set({ context: new Map(state.context) });
+          // Check if this is the session:tasks context
+          if (message.payload.key === "session:tasks" && message.payload.content) {
+            const tasksContent = message.payload.content as { goal: SessionGoal | null; tasks: TaskItem[] };
+            set({
+              context: new Map(state.context),
+              tasksState: {
+                goal: tasksContent.goal,
+                tasks: tasksContent.tasks || [],
+              },
+            });
+          } else {
+            set({ context: new Map(state.context) });
+          }
           break;
 
         case "context.remove":
@@ -551,6 +644,10 @@ export const useTUIStore = create<TUIState>((set, get) => ({
 
   toggleDebug: () => {
     set((state) => ({ debugVisible: !state.debugVisible }));
+  },
+
+  toggleTasks: () => {
+    set((state) => ({ tasksVisible: !state.tasksVisible }));
   },
 
   setError: (error) => {
