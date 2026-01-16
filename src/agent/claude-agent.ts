@@ -13,6 +13,7 @@ import { createFileToolHandler } from "./tools/file-tool.js";
 import { categorizeFilePath, isPathBlocked, type FileWriteCommand, type FileEditCommand } from "./tools/file-executor.js";
 import { createGitCommitToolHandler, type GitCommitArgs, type CommitSessionContext } from "./tools/git-commit-tool.js";
 import { createNotebookToolHandler, type NotebookOutputFormat } from "./tools/notebook-tool.js";
+import { createNpmToolHandler, type NpmOperation, type PackageManager } from "./tools/npm-tool.js";
 import { MCPManager, type MCPServerConfig, type MCPToolDefinition } from "./mcp/index.js";
 import type {
   AnyMessage,
@@ -39,6 +40,8 @@ export class ClaudeAgent {
   private sessionId: SessionId | null = null;
   private workingDirectory: string | null = null;
   private localWorkDir: string | null = null;
+
+  private workspaceInitialized: boolean = false;
   private agentName: string;
   private model: string;
   private conversationHistory: MessageParam[] = [];
@@ -51,6 +54,8 @@ export class ClaudeAgent {
   private gitCommitProposals: Map<MessageId, { args: GitCommitArgs; context: CommitSessionContext; toolUseId: string }> = new Map();
   private notebookToolHandler: ReturnType<typeof createNotebookToolHandler>;
   private notebookProposals: Map<MessageId, { notebookPath: string; outputFormat: NotebookOutputFormat; toolUseId: string }> = new Map();
+  private npmToolHandler: ReturnType<typeof createNpmToolHandler>;
+  private npmProposals: Map<MessageId, { operation: NpmOperation; args: string[]; packageManager: PackageManager; toolUseId: string }> = new Map();
   private toolUseIdToProposalId: Map<MessageId, string> = new Map();
   private currentPromptRef: MessageId | null = null;
 
@@ -106,6 +111,9 @@ export class ClaudeAgent {
     // Initialize notebook tool handler
     this.notebookToolHandler = createNotebookToolHandler();
 
+    // Initialize npm tool handler
+    this.npmToolHandler = createNpmToolHandler();
+
     // Initialize MCP manager
     this.mcpManager = new MCPManager();
 
@@ -114,6 +122,57 @@ export class ClaudeAgent {
     if (config.sessionId) {
       this.sessionId = config.sessionId;
     }
+  }
+
+
+  /**
+   * BLOCKING INITIALIZATION - Must complete before ANY message processing.
+   * Creates working directory and initializes git repo if needed.
+   */
+  private async initializeWorkspace(): Promise<void> {
+    // Determine working directory: localWorkDir takes priority, else generate from sessionId
+    const workDir = this.localWorkDir || (this.sessionId ? `/tmp/pvp-agent/${this.sessionId}` : `/tmp/pvp-agent/${this.participantId}`);
+    this.workingDirectory = workDir;
+
+    logger.info({ workDir }, "Initializing agent workspace...");
+
+    // Step 1: mkdir -p the working directory
+    try {
+      await fs.mkdir(workDir, { recursive: true });
+      logger.info({ workDir }, "Working directory created/verified");
+    } catch (error) {
+      logger.error({ error, workDir }, "CRITICAL: Failed to create working directory");
+      throw new Error(`Failed to create working directory: ${workDir}`);
+    }
+
+    // Step 2: Check if .git exists, if not initialize git repo
+    const gitDir = path.join(workDir, ".git");
+    try {
+      await fs.access(gitDir);
+      logger.info({ workDir }, "Git repository already exists");
+    } catch {
+      // .git doesn't exist - initialize it
+      logger.info({ workDir }, "No git repo found, initializing...");
+      try {
+        const proc = Bun.spawn(["git", "init"], {
+          cwd: workDir,
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        const exitCode = await proc.exited;
+        if (exitCode !== 0) {
+          const stderr = await new Response(proc.stderr).text();
+          throw new Error(`git init failed: ${stderr}`);
+        }
+        logger.info({ workDir }, "Git repository initialized");
+      } catch (gitError) {
+        logger.error({ gitError, workDir }, "CRITICAL: Failed to initialize git repository");
+        throw new Error(`Failed to initialize git in: ${workDir}`);
+      }
+    }
+
+    this.workspaceInitialized = true;
+    logger.info({ workDir }, "✅ Workspace initialization complete - agent ready");
   }
 
   /**
@@ -150,6 +209,10 @@ export class ClaudeAgent {
   }
 
   async connect(): Promise<void> {
+    // BLOCKING: Initialize workspace BEFORE any network communication
+    // This ensures mkdir -p and git init complete before any prompt/tool can execute
+    await this.initializeWorkspace();
+
     this.client.connect();
   }
 
@@ -196,6 +259,14 @@ export class ClaudeAgent {
 
   private async handleMessage(message: AnyMessage): Promise<void> {
     try {
+      // GUARD: Block prompt/tool operations if workspace not initialized
+      // This is defense-in-depth - initializeWorkspace() should complete before connect()
+      const requiresWorkspace = ["prompt.submit", "tool.execute"].includes(message.type);
+      if (requiresWorkspace && !this.workspaceInitialized) {
+        logger.error({ type: message.type }, "BLOCKED: Workspace not initialized - cannot process operation");
+        throw new Error(`Cannot process ${message.type} - workspace not initialized`);
+      }
+
       switch (message.type) {
         case "prompt.submit":
           // Only respond to prompts targeted at this agent
@@ -234,8 +305,35 @@ export class ClaudeAgent {
               this.workingDirectory = this.localWorkDir;
               logger.info({ workingDirectory: this.workingDirectory }, "Using local working directory (--local flag)");
             } else {
-              this.workingDirectory = message.payload.content;
+              const newWorkDir = message.payload.content;
+              this.workingDirectory = newWorkDir;
               logger.info({ workingDirectory: this.workingDirectory }, "Session working directory set");
+              
+              // CRITICAL: Ensure git repo exists in server-provided directory
+              const gitDir = path.join(newWorkDir, ".git");
+              try {
+                await fs.access(gitDir);
+                logger.info({ workingDirectory: newWorkDir }, "Git repository already exists in server directory");
+              } catch {
+                // No .git - initialize it
+                logger.info({ workingDirectory: newWorkDir }, "No git repo in server directory, initializing...");
+                try {
+                  const proc = Bun.spawn(["git", "init"], {
+                    cwd: newWorkDir,
+                    stdout: "pipe",
+                    stderr: "pipe",
+                  });
+                  const exitCode = await proc.exited;
+                  if (exitCode !== 0) {
+                    const stderr = await new Response(proc.stderr).text();
+                    logger.error({ stderr, workingDirectory: newWorkDir }, "git init failed in server directory");
+                  } else {
+                    logger.info({ workingDirectory: newWorkDir }, "Git repository initialized in server directory");
+                  }
+                } catch (gitError) {
+                  logger.error({ gitError, workingDirectory: newWorkDir }, "Failed to initialize git in server directory");
+                }
+              }
             }
           }
           break;
@@ -445,10 +543,23 @@ export class ClaudeAgent {
       return;
     }
 
+    // Check if this is an npm operation proposal
+    if (this.npmProposals.has(tool_proposal)) {
+      logger.info({ toolProposal: tool_proposal, approvers: approved_by }, "Executing approved npm operation");
+      await this.executeNpm(tool_proposal);
+      return;
+    }
+
     // Retrieve the shell tool proposal
     const proposal = this.toolProposals.get(tool_proposal);
     if (!proposal) {
-      logger.warn({ toolProposal: tool_proposal }, "Tool proposal not found");
+      logger.error({ toolProposal: tool_proposal }, "Tool proposal not found in any map - sending error to batch");
+      // Must update batch with error result so it doesn't hang forever waiting
+      this.updateBatchResult(tool_proposal, {
+        success: false,
+        output: "",
+        error: `Tool proposal ${tool_proposal} not found - may have been created before code was deployed`,
+      });
       return;
     }
 
@@ -603,6 +714,18 @@ export class ClaudeAgent {
       return;
     }
 
+    // Check if this is an npm proposal
+    const npmProposal = this.npmProposals.get(proposalId);
+    if (npmProposal) {
+      this.npmProposals.delete(proposalId);
+      this.updateBatchResult(proposalId, {
+        success: false,
+        output: "",
+        error: `NPM operation "${npmProposal.operation}" rejected by human: ${reason}`,
+      });
+      return;
+    }
+
     // Check if this is an MCP tool proposal
     const mcpProposal = this.mcpToolProposals.get(proposalId);
     if (mcpProposal) {
@@ -615,7 +738,13 @@ export class ClaudeAgent {
       return;
     }
 
-    logger.warn({ proposalId }, "Gate rejection received but no matching proposal found");
+    // No matching proposal found - still need to update batch so it doesn't hang
+    logger.error({ proposalId, reason }, "Gate rejection received but no matching proposal found - updating batch with error");
+    this.updateBatchResult(proposalId, {
+      success: false,
+      output: "",
+      error: `Gate rejected but proposal ${proposalId} not found: ${reason}`,
+    });
   }
 
   /**
@@ -889,6 +1018,33 @@ export class ClaudeAgent {
           }
         },
         required: ["notebook_path"]
+      }
+    });
+
+    // Add npm tool for package management
+    tools.push({
+      name: "npm",
+      description: "Manage npm/yarn/bun packages. Can init projects, install/add/remove packages, run scripts, and audit dependencies. Auto-detects package manager from lockfile.",
+      input_schema: {
+        type: "object",
+        properties: {
+          operation: {
+            type: "string",
+            enum: ["init", "install", "add", "remove", "update", "run", "audit", "list", "outdated", "publish", "link", "exec"],
+            description: "Operation: init (create package.json), install (all deps), add (specific pkg), remove, update, run (scripts), audit, list, outdated, publish, link, exec (npx/bunx)"
+          },
+          args: {
+            type: "array",
+            items: { type: "string" },
+            description: "Arguments: package names for add/remove, script name for run, command for exec"
+          },
+          package_manager: {
+            type: "string",
+            enum: ["npm", "yarn", "bun", "pnpm"],
+            description: "Package manager (auto-detected from lockfile if not specified)"
+          }
+        },
+        required: ["operation"]
       }
     });
 
@@ -1354,6 +1510,137 @@ export class ClaudeAgent {
     } catch (error) {
       logger.error({ error, proposalId }, "Notebook execution failed");
       this.notebookProposals.delete(proposalId);
+
+      this.updateBatchResult(proposalId, {
+        success: false,
+        output: "",
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  }
+
+  /**
+   * Propose an npm operation to the session
+   */
+  public async proposeNpmOperation(
+    operation: NpmOperation,
+    args: string[] = [],
+    packageManager?: PackageManager,
+    toolUseId?: string
+  ): Promise<MessageId> {
+    if (!this.sessionId) {
+      throw new Error("Not connected to a session");
+    }
+
+    try {
+      const pm = packageManager || "npm";
+
+      const proposalMsg = this.npmToolHandler.proposeNpmOperation(
+        operation,
+        args,
+        this.sessionId,
+        this.participantId,
+        pm
+      );
+
+      // Store the proposal for later execution
+      this.npmProposals.set(proposalMsg.id, {
+        operation,
+        args,
+        packageManager: pm,
+        toolUseId: toolUseId || "",
+      });
+
+      // Track Claude's tool use ID if provided
+      if (toolUseId) {
+        this.toolUseIdToProposalId.set(proposalMsg.id, toolUseId);
+
+        // Update batch with proposal ID
+        if (this.pendingToolBatch) {
+          const batchEntry = this.pendingToolBatch.tools.get(toolUseId);
+          if (batchEntry) {
+            batchEntry.proposalId = proposalMsg.id;
+          }
+        }
+      }
+
+      // Send the proposal
+      this.client.send(proposalMsg);
+
+      logger.info({
+        proposalId: proposalMsg.id,
+        toolUseId,
+        operation,
+        args,
+        packageManager: pm,
+      }, "Proposed npm operation");
+
+      return proposalMsg.id;
+    } catch (error) {
+      logger.error({ error, operation, args }, "Failed to propose npm operation");
+      throw error;
+    }
+  }
+
+  /**
+   * Execute an npm operation after approval
+   */
+  private async executeNpm(proposalId: MessageId): Promise<void> {
+    if (!this.sessionId) return;
+
+    const proposal = this.npmProposals.get(proposalId);
+    if (!proposal) {
+      logger.warn({ proposalId }, "Npm proposal not found");
+      return;
+    }
+
+    const { operation, args, packageManager } = proposal;
+
+    logger.info({
+      proposalId,
+      operation,
+      args,
+      packageManager,
+    }, "Executing approved npm operation");
+
+    try {
+      let result: { success: boolean; output: string; error?: string } | null = null;
+
+      await this.npmToolHandler.executeNpmOperation(
+        proposalId,
+        operation,
+        args,
+        this.sessionId,
+        this.participantId,
+        (msg: AnyMessage) => {
+          this.client.send(msg);
+
+          // Capture tool.result message
+          if (msg.type === "tool.result") {
+            const payload = msg.payload as { success: boolean; result?: unknown; error?: string };
+            result = {
+              success: payload.success,
+              output: typeof payload.result === "string"
+                ? payload.result
+                : JSON.stringify(payload.result || {}),
+              error: payload.error,
+            };
+          }
+        },
+        this.workingDirectory ?? undefined,
+        packageManager
+      );
+
+      // Clean up
+      this.npmProposals.delete(proposalId);
+
+      // Update batch with result
+      if (result) {
+        this.updateBatchResult(proposalId, result);
+      }
+    } catch (error) {
+      logger.error({ error, proposalId }, "Npm operation failed");
+      this.npmProposals.delete(proposalId);
 
       this.updateBatchResult(proposalId, {
         success: false,
@@ -1954,6 +2241,19 @@ export class ClaudeAgent {
           }
           logger.info({ notebookPath: input.notebook_path, outputFormat: input.output_format || "notebook", toolUseId: toolUse.id }, "Claude requested notebook execution");
           await this.proposeNotebookExecute(input.notebook_path, input.output_format || "notebook", toolUse.id);
+        } else if (toolUse.name === "npm") {
+          const input = toolUse.input as {
+            operation: NpmOperation;
+            args?: string[];
+            package_manager?: PackageManager;
+          };
+          if (!input.operation) {
+            logger.error({ toolUseId: toolUse.id }, "Npm input missing operation field");
+            this.markToolFailed(toolUse.id, "Missing operation");
+            continue;
+          }
+          logger.info({ operation: input.operation, args: input.args, packageManager: input.package_manager, toolUseId: toolUse.id }, "Claude requested npm operation");
+          await this.proposeNpmOperation(input.operation, input.args || [], input.package_manager, toolUse.id);
         } else if (this.mcpManager.isMCPTool(toolUse.name)) {
           logger.info({ tool: toolUse.name, toolUseId: toolUse.id }, "Claude requested MCP tool execution");
           await this.proposeMCPTool(toolUse.name, toolUse.input as Record<string, unknown>, toolUse.id);
