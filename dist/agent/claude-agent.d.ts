@@ -1,4 +1,5 @@
 import { type NotebookOutputFormat } from "./tools/notebook-tool.js";
+import { type NpmOperation, type PackageManager } from "./tools/npm-tool.js";
 import { type MCPServerConfig } from "./mcp/index.js";
 import type { SessionId, MessageId } from "../protocol/types.js";
 export interface ClaudeAgentConfig {
@@ -17,6 +18,7 @@ export declare class ClaudeAgent {
     private sessionId;
     private workingDirectory;
     private localWorkDir;
+    private workspaceInitialized;
     private agentName;
     private model;
     private conversationHistory;
@@ -29,12 +31,19 @@ export declare class ClaudeAgent {
     private gitCommitProposals;
     private notebookToolHandler;
     private notebookProposals;
+    private npmToolHandler;
+    private npmProposals;
     private toolUseIdToProposalId;
     private currentPromptRef;
     private mcpManager;
     private mcpToolProposals;
     private pendingToolBatch;
     constructor(config: ClaudeAgentConfig);
+    /**
+     * BLOCKING INITIALIZATION - Must complete before ANY message processing.
+     * Creates working directory and initializes git repo if needed.
+     */
+    private initializeWorkspace;
     /**
      * Initialize MCP servers from configuration
      */
@@ -94,6 +103,14 @@ export declare class ClaudeAgent {
      * Execute a notebook after approval
      */
     private executeNotebook;
+    /**
+     * Propose an npm operation to the session
+     */
+    proposeNpmOperation(operation: NpmOperation, args?: string[], packageManager?: PackageManager, toolUseId?: string): Promise<MessageId>;
+    /**
+     * Execute an npm operation after approval
+     */
+    private executeNpm;
     /**
      * Propose an MCP tool for execution through the PVP gate system
      */
