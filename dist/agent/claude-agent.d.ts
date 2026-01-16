@@ -43,6 +43,7 @@ export declare class ClaudeAgent {
     private tasksProposals;
     private strictMode;
     private toolUseIdToProposalId;
+    private sessionParticipants;
     private currentPromptRef;
     private mcpManager;
     private mcpToolProposals;
@@ -125,6 +126,23 @@ export declare class ClaudeAgent {
      * Returns a markdown-formatted string describing the session objective and task status
      */
     getTasksContextSummary(): string;
+    /**
+     * Handle a new participant joining the session.
+     * Notifies the LLM about the new participant so it can respond intelligently.
+     */
+    private handleParticipantJoined;
+    /**
+     * Check if a message is addressed to another participant via @mention
+     *
+     * Rules:
+     * - If message STARTS with "@participantName" where participantName is another participant,
+     *   the agent should ignore the message entirely
+     * - If "@participantName" appears elsewhere in the message, the agent should use context
+     *   clues to decide if it's being addressed (handled by returning mentionContext)
+     *
+     * @returns shouldIgnore: true if agent should not respond, mentionContext: context for LLM
+     */
+    private checkMentionRouting;
     /**
      * Check if strict mode is enabled
      */

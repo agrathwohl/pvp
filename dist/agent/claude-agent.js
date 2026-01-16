@@ -40,6 +40,8 @@ export class ClaudeAgent {
     tasksProposals = new Map();
     strictMode = false;
     toolUseIdToProposalId = new Map();
+    // Track session participants for @mention filtering
+    sessionParticipants = new Map();
     currentPromptRef = null;
     // MCP support
     mcpManager;
@@ -293,6 +295,40 @@ export class ClaudeAgent {
                         }
                     }
                     break;
+                case "participant.announce": {
+                    // Track participant for @mention filtering
+                    const payload = message.payload;
+                    const isNewParticipant = !this.sessionParticipants.has(payload.id);
+                    const isNotSelf = payload.id !== this.participantId;
+                    this.sessionParticipants.set(payload.id, {
+                        name: payload.name,
+                        type: payload.type,
+                    });
+                    logger.debug({ participantId: payload.id, name: payload.name, type: payload.type }, "Tracking session participant");
+                    // Notify LLM about new participant joining
+                    if (isNewParticipant && isNotSelf && this.sessionId) {
+                        await this.handleParticipantJoined(payload);
+                    }
+                    break;
+                }
+                case "session.join": {
+                    // Also track from session.join which embeds participant info
+                    const joinPayload = message.payload;
+                    if (joinPayload.participant) {
+                        const isNewParticipant = !this.sessionParticipants.has(joinPayload.participant.id);
+                        const isNotSelf = joinPayload.participant.id !== this.participantId;
+                        this.sessionParticipants.set(joinPayload.participant.id, {
+                            name: joinPayload.participant.name,
+                            type: joinPayload.participant.type,
+                        });
+                        logger.debug({ participantId: joinPayload.participant.id, name: joinPayload.participant.name }, "Tracking participant from session.join");
+                        // Notify LLM about new participant joining
+                        if (isNewParticipant && isNotSelf && this.sessionId) {
+                            await this.handleParticipantJoined(joinPayload.participant);
+                        }
+                    }
+                    break;
+                }
                 default:
                     // Log other message types for debugging
                     logger.debug({ type: message.type }, "Received message");
@@ -309,6 +345,17 @@ export class ClaudeAgent {
         if (!this.sessionId)
             return;
         const { content } = message.payload;
+        // @mention filtering: check if message is addressed to another participant
+        const mentionCheck = this.checkMentionRouting(content);
+        if (mentionCheck.shouldIgnore) {
+            logger.info({ targetParticipant: mentionCheck.targetName, content: content.slice(0, 50) }, "Ignoring prompt addressed to another participant");
+            return;
+        }
+        // If there's mention context (message mentions others but not directly addressed),
+        // prepend it so the LLM can use context clues to decide if it should respond
+        const effectiveContent = mentionCheck.mentionContext
+            ? `${mentionCheck.mentionContext}\n\n${content}`
+            : content;
         // CRITICAL: Block new prompts while tools are pending
         // The Anthropic API requires all tool_use blocks to have tool_result blocks
         // in the next message. If we process a new prompt while tools are pending,
@@ -332,7 +379,7 @@ export class ClaudeAgent {
                 return;
             }
         }
-        logger.info(`[${this.agentName}] Processing prompt: ${content.slice(0, 100)}...`);
+        logger.info(`[${this.agentName}] Processing prompt: ${effectiveContent.slice(0, 100)}...`);
         // Store prompt ref for tool result responses
         this.currentPromptRef = message.id;
         // Send thinking start
@@ -365,7 +412,7 @@ export class ClaudeAgent {
             // Add user message to history
             this.conversationHistory.push({
                 role: "user",
-                content: content
+                content: effectiveContent
             });
             // Call Claude with tool
             const response = await this.anthropic.messages.create({
@@ -1387,6 +1434,185 @@ export class ClaudeAgent {
      */
     getTasksContextSummary() {
         return this.tasksToolHandler.getContextSummary();
+    }
+    /**
+     * Handle a new participant joining the session.
+     * Notifies the LLM about the new participant so it can respond intelligently.
+     */
+    async handleParticipantJoined(participant) {
+        if (!this.sessionId)
+            return;
+        // Don't interrupt if tools are pending
+        if (this.pendingToolBatch && this.pendingToolBatch.tools.size > 0) {
+            const pendingCount = Array.from(this.pendingToolBatch.tools.values())
+                .filter(t => t.status === 'pending').length;
+            if (pendingCount > 0) {
+                logger.debug({ participant: participant.name }, "Skipping join notification - tools pending");
+                return;
+            }
+        }
+        logger.info({ name: participant.name, type: participant.type, roles: participant.roles }, "New participant joined session - notifying LLM");
+        // Build context about who joined
+        const participantType = participant.type === "agent" ? "AI agent" : "human";
+        const rolesDesc = participant.roles.length > 0 ? ` with role(s): ${participant.roles.join(", ")}` : "";
+        const joinNotification = `[SYSTEM NOTIFICATION: A new ${participantType} named "${participant.name}" has joined the session${rolesDesc}. ` +
+            `You may acknowledge their arrival briefly and welcome them if appropriate. ` +
+            `If you have prior context about this participant, you may reference it.]`;
+        // Generate a prompt ref for this notification response
+        const notificationPromptRef = ulid();
+        // Send thinking start (follows established pattern)
+        const thinkingStartMsg = createMessage("thinking.start", this.sessionId, this.participantId, {
+            agent: this.participantId,
+            prompt_ref: notificationPromptRef,
+            visible_to: "all",
+        });
+        this.client.send(thinkingStartMsg);
+        // Send response start
+        const responseStartMsg = createMessage("response.start", this.sessionId, this.participantId, {
+            agent: this.participantId,
+            prompt_ref: notificationPromptRef,
+        });
+        this.client.send(responseStartMsg);
+        try {
+            // Add join notification to history
+            this.conversationHistory.push({
+                role: "user",
+                content: joinNotification
+            });
+            // Call Claude for a brief acknowledgment
+            const response = await this.anthropic.messages.create({
+                model: this.model,
+                max_tokens: 256, // Keep response brief
+                messages: this.conversationHistory,
+                tools: [] // No tools for join acknowledgment
+            });
+            // Handle response
+            let fullResponse = "";
+            for (const block of response.content) {
+                if (block.type === "text") {
+                    fullResponse += block.text;
+                    const chunkMsg = createMessage("response.chunk", this.sessionId, this.participantId, { text: block.text });
+                    this.client.send(chunkMsg);
+                }
+            }
+            // Add assistant response to history
+            this.conversationHistory.push({
+                role: "assistant",
+                content: fullResponse
+            });
+            // Send thinking end
+            const thinkingEndMsg = createMessage("thinking.end", this.sessionId, this.participantId, {
+                summary: `Generated join acknowledgment for ${participant.name}`,
+            });
+            this.client.send(thinkingEndMsg);
+            // Send response end
+            const responseEndMsg = createMessage("response.end", this.sessionId, this.participantId, {
+                finish_reason: "complete",
+            });
+            this.client.send(responseEndMsg);
+        }
+        catch (error) {
+            logger.error({ error, participant: participant.name }, "Error generating join acknowledgment");
+            // Send thinking end on error
+            const thinkingEndMsg = createMessage("thinking.end", this.sessionId, this.participantId, {
+                summary: "Error generating join acknowledgment",
+            });
+            this.client.send(thinkingEndMsg);
+            // Send error response end
+            const responseEndMsg = createMessage("response.end", this.sessionId, this.participantId, {
+                finish_reason: "error",
+            });
+            this.client.send(responseEndMsg);
+        }
+    }
+    /**
+     * Check if a message is addressed to another participant via @mention
+     *
+     * Rules:
+     * - If message STARTS with "@participantName" where participantName is another participant,
+     *   the agent should ignore the message entirely
+     * - If "@participantName" appears elsewhere in the message, the agent should use context
+     *   clues to decide if it's being addressed (handled by returning mentionContext)
+     *
+     * @returns shouldIgnore: true if agent should not respond, mentionContext: context for LLM
+     */
+    checkMentionRouting(content) {
+        const trimmedContent = content.trim();
+        // Build list of other participants (not this agent)
+        const otherParticipants = [];
+        for (const [id, info] of this.sessionParticipants) {
+            if (id !== this.participantId) {
+                otherParticipants.push({ id, name: info.name });
+            }
+        }
+        if (otherParticipants.length === 0) {
+            // No other participants tracked, can't filter
+            return { shouldIgnore: false };
+        }
+        // Check if message starts with @participantName (case-insensitive)
+        const startsWithMentionRegex = /^@(\S+)/i;
+        const startsWithMatch = trimmedContent.match(startsWithMentionRegex);
+        if (startsWithMatch) {
+            const mentionedName = startsWithMatch[1].toLowerCase();
+            // Check if this mentions another participant
+            for (const participant of otherParticipants) {
+                const participantNameLower = participant.name.toLowerCase();
+                // Match if the mention is the participant's name or starts with it
+                if (mentionedName === participantNameLower ||
+                    participantNameLower.startsWith(mentionedName) ||
+                    mentionedName.startsWith(participantNameLower)) {
+                    return {
+                        shouldIgnore: true,
+                        targetName: participant.name,
+                    };
+                }
+            }
+            // Check if it mentions this agent (case-insensitive)
+            const agentNameLower = this.agentName.toLowerCase();
+            if (mentionedName === agentNameLower ||
+                agentNameLower.startsWith(mentionedName) ||
+                mentionedName.startsWith(agentNameLower)) {
+                // Addressed to this agent, definitely respond
+                return { shouldIgnore: false };
+            }
+        }
+        // Check for @mentions elsewhere in the message
+        const mentionRegex = /@(\S+)/gi;
+        const allMentions = [...trimmedContent.matchAll(mentionRegex)];
+        if (allMentions.length > 0) {
+            const mentionedNames = [];
+            let mentionsThisAgent = false;
+            let mentionsOthers = false;
+            for (const match of allMentions) {
+                const mentionedName = match[1].toLowerCase();
+                // Check if mentions this agent
+                const agentNameLower = this.agentName.toLowerCase();
+                if (mentionedName === agentNameLower ||
+                    agentNameLower.startsWith(mentionedName) ||
+                    mentionedName.startsWith(agentNameLower)) {
+                    mentionsThisAgent = true;
+                }
+                // Check if mentions other participants
+                for (const participant of otherParticipants) {
+                    const participantNameLower = participant.name.toLowerCase();
+                    if (mentionedName === participantNameLower ||
+                        participantNameLower.startsWith(mentionedName) ||
+                        mentionedName.startsWith(participantNameLower)) {
+                        mentionsOthers = true;
+                        mentionedNames.push(participant.name);
+                    }
+                }
+            }
+            // If mentions others but not this agent, provide context for LLM to decide
+            if (mentionsOthers && !mentionsThisAgent) {
+                return {
+                    shouldIgnore: false,
+                    mentionContext: `Note: This message mentions other participant(s): ${mentionedNames.join(", ")}. ` +
+                        `Use context clues to determine if you are also being addressed or if this is directed only at them.`,
+                };
+            }
+        }
+        return { shouldIgnore: false };
     }
     /**
      * Check if strict mode is enabled

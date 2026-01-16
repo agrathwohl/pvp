@@ -23,6 +23,14 @@ export const useTUIStore = create((set, get) => ({
         decisionSummary: null,
         lastCommit: null,
     },
+    tasksState: {
+        goal: null,
+        tasks: [],
+    },
+    tasksVisible: true,
+    joinNotifications: [],
+    mentionRouting: new Map(),
+    lastIgnoredMention: null,
     mode: "stream",
     draftPrompt: "",
     currentThinking: "",
@@ -104,17 +112,37 @@ export const useTUIStore = create((set, get) => ({
             // Handle different message types
             switch (message.type) {
                 case "participant.announce":
-                    state.participants.set(message.payload.id, {
-                        info: message.payload,
-                        presence: "active",
-                        lastHeartbeat: new Date().toISOString(),
-                        lastActive: new Date().toISOString(),
-                    });
-                    const updatedParticipants = new Map(state.participants);
-                    set({
-                        participants: updatedParticipants,
-                        debugLog: [...newDebugLog, `ADDED: ${message.payload.name} (total: ${updatedParticipants.size})`].slice(-10)
-                    });
+                    {
+                        const isNewParticipant = !state.participants.has(message.payload.id);
+                        state.participants.set(message.payload.id, {
+                            info: message.payload,
+                            presence: "active",
+                            lastHeartbeat: new Date().toISOString(),
+                            lastActive: new Date().toISOString(),
+                        });
+                        const updatedParticipants = new Map(state.participants);
+                        // Track join notification for new participants (not self)
+                        if (isNewParticipant && message.payload.id !== state.participantId) {
+                            const notification = {
+                                participantId: message.payload.id,
+                                participantName: message.payload.name,
+                                participantType: message.payload.type,
+                                roles: message.payload.roles || [],
+                                timestamp: message.ts,
+                            };
+                            set({
+                                participants: updatedParticipants,
+                                joinNotifications: [...state.joinNotifications, notification].slice(-10),
+                                debugLog: [...newDebugLog, `JOINED: ${message.payload.name} (${message.payload.type})`].slice(-10)
+                            });
+                        }
+                        else {
+                            set({
+                                participants: updatedParticipants,
+                                debugLog: [...newDebugLog, `ADDED: ${message.payload.name} (total: ${updatedParticipants.size})`].slice(-10)
+                            });
+                        }
+                    }
                     break;
                 case "session.leave":
                     state.participants.delete(message.sender);
@@ -144,7 +172,20 @@ export const useTUIStore = create((set, get) => ({
                         added_at: message.ts,
                         updated_at: message.ts,
                     });
-                    set({ context: new Map(state.context) });
+                    // Check if this is the session:tasks context
+                    if (message.payload.key === "session:tasks" && message.payload.content) {
+                        const tasksContent = message.payload.content;
+                        set({
+                            context: new Map(state.context),
+                            tasksState: {
+                                goal: tasksContent.goal,
+                                tasks: tasksContent.tasks || [],
+                            },
+                        });
+                    }
+                    else {
+                        set({ context: new Map(state.context) });
+                    }
                     break;
                 case "context.remove":
                     state.context.delete(message.payload.key);
@@ -406,6 +447,9 @@ export const useTUIStore = create((set, get) => ({
     },
     toggleDebug: () => {
         set((state) => ({ debugVisible: !state.debugVisible }));
+    },
+    toggleTasks: () => {
+        set((state) => ({ tasksVisible: !state.tasksVisible }));
     },
     setError: (error) => {
         set({ error });
