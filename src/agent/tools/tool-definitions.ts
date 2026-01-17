@@ -5,7 +5,7 @@
  * the interface Claude uses to invoke tools with proper parameters.
  */
 
-import type { Tool } from "@anthropic-ai/sdk/resources/messages.js";
+import type { ToolDefinition } from "../providers/types.js";
 
 // ===========================================================================
 // Shell Tool
