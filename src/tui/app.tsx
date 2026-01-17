@@ -64,12 +64,19 @@ export function App({
     return agents.length > 0 ? agents[0] : otherParticipants[0];
   };
 
+  // Get participant display name from ID (falls back to ID if not found)
+  const getParticipantName = (id: ParticipantId): string => {
+    return participants.get(id)?.info.name || id;
+  };
+
+  // Connect to session on mount or when connection params change
   useEffect(() => {
     connect(serverUrl, sessionId, participantId, participantName, role, isCreator);
     return () => {
       disconnect();
     };
-  }, [serverUrl, sessionId, participantId, participantName, role, isCreator]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverUrl, sessionId, participantId, participantName, role, isCreator]); // connect/disconnect are stable store actions
 
   // Poll decision tracking state from bridge service
   useEffect(() => {
@@ -84,7 +91,8 @@ export function App({
     }, 5000);
 
     return () => clearInterval(interval);
-  }, [connected, fetchDecisionTracking]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connected]); // fetchDecisionTracking is a stable store action
 
   useInput((input, key) => {
     if (key.ctrl && input === "c") {
@@ -310,8 +318,62 @@ export function App({
                 )}
               </Box>
             )}
+            {msg.type === "tool.approve" && (
+              <Text color="green">
+                ✓ Tool approved by{" "}
+                <Text bold>
+                  {getParticipantName(msg.payload.approver)}
+                </Text>
+                {msg.payload.comment && (
+                  <Text dimColor> - {msg.payload.comment}</Text>
+                )}
+              </Text>
+            )}
+            {msg.type === "tool.reject" && (
+              <Box flexDirection="column">
+                <Text color="red">
+                  ✗ Tool rejected by{" "}
+                  <Text bold>
+                    {getParticipantName(msg.payload.rejector)}
+                  </Text>
+                </Text>
+                <Text color="red" dimColor>
+                  {" "}└─ Reason: {msg.payload.reason}
+                </Text>
+                {msg.payload.suggestion && (
+                  <Text color="yellow" dimColor>
+                    {" "}└─ Suggestion: {msg.payload.suggestion}
+                  </Text>
+                )}
+              </Box>
+            )}
             {msg.type === "gate.request" && (
               <Text color="red">⚠️  {msg.payload.message}</Text>
+            )}
+            {msg.type === "gate.approve" && (
+              <Text color="green">
+                ✓ Gate approved by{" "}
+                <Text bold>
+                  {getParticipantName(msg.payload.approver)}
+                </Text>
+                {msg.payload.comment && (
+                  <Text dimColor> - {msg.payload.comment}</Text>
+                )}
+              </Text>
+            )}
+            {msg.type === "gate.reject" && (
+              <Text color="red">
+                ✗ Gate rejected by{" "}
+                <Text bold>
+                  {getParticipantName(msg.payload.rejector)}
+                </Text>
+                <Text dimColor> - {msg.payload.reason}</Text>
+              </Text>
+            )}
+            {msg.type === "gate.timeout" && (
+              <Text color="yellow">
+                ⏱ Gate timed out - {msg.payload.resolution} ({msg.payload.approvals_received}/{msg.payload.approvals_required} approvals)
+              </Text>
             )}
           </Box>
         ))}

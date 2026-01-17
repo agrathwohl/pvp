@@ -1,3 +1,4 @@
+import { type LLMProvider } from "./providers/index.js";
 import { type NotebookOutputFormat } from "./tools/notebook-tool.js";
 import { type NpmOperation, type PackageManager } from "./tools/npm-tool.js";
 import { type TaskOperationArgs } from "./tools/tasks-tool.js";
@@ -16,10 +17,16 @@ export interface ClaudeAgentConfig {
      * When enabled, the agent will validate that work is in pursuit of defined tasks/goals.
      */
     strictMode?: boolean;
+    /**
+     * LLM provider instance. Defaults to AnthropicProvider if not specified.
+     * Enables support for different LLM backends (OpenAI, Ollama, etc.)
+     */
+    provider?: LLMProvider;
 }
 export declare class ClaudeAgent {
     private client;
     private anthropic;
+    private provider;
     private participantId;
     private sessionId;
     private workingDirectory;

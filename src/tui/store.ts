@@ -348,7 +348,79 @@ export const useTUIStore = create<TUIState>((set, get) => ({
 
         case "context.remove":
           state.context.delete(message.payload.key);
-          set({ context: new Map(state.context) });
+          // If removing session:tasks, clear the tasks state too
+          if (message.payload.key === "session:tasks") {
+            set({
+              context: new Map(state.context),
+              tasksState: { goal: null, tasks: [] },
+            });
+          } else {
+            set({ context: new Map(state.context) });
+          }
+          break;
+
+        case "context.update":
+          {
+            const existing = state.context.get(message.payload.key);
+            if (existing) {
+              // Update the context item
+              const updatedItem = {
+                ...existing,
+                content: message.payload.new_content ?? existing.content,
+                content_ref: message.payload.new_content_ref ?? existing.content_ref,
+                updated_at: message.ts,
+              };
+              state.context.set(message.payload.key, updatedItem);
+
+              // If this is session:tasks, also update the tasks state
+              if (message.payload.key === "session:tasks" && message.payload.new_content) {
+                const tasksContent = message.payload.new_content as { goal: SessionGoal | null; tasks: TaskItem[] };
+                set({
+                  context: new Map(state.context),
+                  tasksState: {
+                    goal: tasksContent.goal,
+                    tasks: tasksContent.tasks || [],
+                  },
+                  debugLog: [...state.debugLog, `CONTEXT UPDATE: ${message.payload.key} (${message.payload.reason})`].slice(-10),
+                });
+              } else {
+                set({
+                  context: new Map(state.context),
+                  debugLog: [...state.debugLog, `CONTEXT UPDATE: ${message.payload.key} (${message.payload.reason})`].slice(-10),
+                });
+              }
+            } else {
+              // Context doesn't exist yet - treat as add
+              state.context.set(message.payload.key, {
+                key: message.payload.key,
+                content_type: "text", // Default when receiving update before add
+                content: message.payload.new_content,
+                content_ref: message.payload.new_content_ref,
+                visible_to: undefined, // Update messages don't carry visibility info
+                added_by: message.sender,
+                added_at: message.ts,
+                updated_at: message.ts,
+              });
+
+              // Also sync tasksState if this is session:tasks (same as context.add)
+              if (message.payload.key === "session:tasks" && message.payload.new_content) {
+                const tasksContent = message.payload.new_content as { goal: SessionGoal | null; tasks: TaskItem[] };
+                set({
+                  context: new Map(state.context),
+                  tasksState: {
+                    goal: tasksContent.goal,
+                    tasks: tasksContent.tasks || [],
+                  },
+                  debugLog: [...state.debugLog, `CONTEXT ADD (via update): ${message.payload.key}`].slice(-10),
+                });
+              } else {
+                set({
+                  context: new Map(state.context),
+                  debugLog: [...state.debugLog, `CONTEXT ADD (via update): ${message.payload.key}`].slice(-10),
+                });
+              }
+            }
+          }
           break;
 
         case "thinking.start":
