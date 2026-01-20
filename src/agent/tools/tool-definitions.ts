@@ -11,7 +11,7 @@ import type { ToolDefinition } from "../providers/types.js";
 // Shell Tool
 // ===========================================================================
 
-export const SHELL_TOOL_DEFINITION: Tool = {
+export const SHELL_TOOL_DEFINITION: ToolDefinition = {
   name: "execute_shell_command",
   description: "Execute a shell command with safety controls and approval workflows. Commands are categorized by risk (safe/low/medium/high/critical) and may require human approval.",
   input_schema: {
@@ -30,7 +30,7 @@ export const SHELL_TOOL_DEFINITION: Tool = {
 // File Tools
 // ===========================================================================
 
-export const FILE_WRITE_TOOL_DEFINITION: Tool = {
+export const FILE_WRITE_TOOL_DEFINITION: ToolDefinition = {
   name: "file_write",
   description: "Write content to a file with safety controls. Files are categorized by risk based on path and type. System directories and sensitive files are blocked. Source code files require approval.",
   input_schema: {
@@ -53,7 +53,7 @@ export const FILE_WRITE_TOOL_DEFINITION: Tool = {
   }
 };
 
-export const FILE_EDIT_TOOL_DEFINITION: Tool = {
+export const FILE_EDIT_TOOL_DEFINITION: ToolDefinition = {
   name: "file_edit",
   description: "Edit a file by replacing text. Finds occurrences of old_text and replaces with new_text. Use occurrence=0 to replace all, or specify which occurrence to replace.",
   input_schema: {
@@ -84,7 +84,7 @@ export const FILE_EDIT_TOOL_DEFINITION: Tool = {
 // Git Tool
 // ===========================================================================
 
-export const GIT_COMMIT_TOOL_DEFINITION: Tool = {
+export const GIT_COMMIT_TOOL_DEFINITION: ToolDefinition = {
   name: "git_commit",
   description: "Create a git commit following the PVP Git Commit Protocol with rich decision context. Use conventional commit types and include session/participant tracking via git trailers.",
   input_schema: {
@@ -125,7 +125,7 @@ export const GIT_COMMIT_TOOL_DEFINITION: Tool = {
 // Notebook Tool
 // ===========================================================================
 
-export const NOTEBOOK_EXECUTE_TOOL_DEFINITION: Tool = {
+export const NOTEBOOK_EXECUTE_TOOL_DEFINITION: ToolDefinition = {
   name: "notebook_execute",
   description: "Execute a Jupyter notebook and return the executed .ipynb with outputs populated. The result is broadcast as context.add with key 'notebook:executed:{filename}' for notebook-viewer.tsx to render. Can also convert to html/markdown/pdf if specified. Requires human approval due to arbitrary code execution.",
   input_schema: {
@@ -149,7 +149,7 @@ export const NOTEBOOK_EXECUTE_TOOL_DEFINITION: Tool = {
 // NPM Tool
 // ===========================================================================
 
-export const NPM_TOOL_DEFINITION: Tool = {
+export const NPM_TOOL_DEFINITION: ToolDefinition = {
   name: "npm",
   description: "Manage npm/yarn/bun packages. Can init projects, install/add/remove packages, run scripts, and audit dependencies. Auto-detects package manager from lockfile.",
   input_schema: {
@@ -179,7 +179,7 @@ export const NPM_TOOL_DEFINITION: Tool = {
 // Tasks Tool
 // ===========================================================================
 
-export const TASKS_TOOL_DEFINITION: Tool = {
+export const TASKS_TOOL_DEFINITION: ToolDefinition = {
   name: "tasks",
   description: "Manage session tasks and goals. Track what needs to be done, update progress, and maintain awareness of the session objective. Use this when prompters inform you of goals or tasks to complete. Tasks are persisted to the session and survive agent reconnections.",
   input_schema: {
@@ -229,7 +229,7 @@ export const TASKS_TOOL_DEFINITION: Tool = {
  * All built-in tool definitions.
  * MCP tools are added dynamically by the agent.
  */
-export const BUILTIN_TOOL_DEFINITIONS: Tool[] = [
+export const BUILTIN_TOOL_DEFINITIONS: ToolDefinition[] = [
   SHELL_TOOL_DEFINITION,
   FILE_WRITE_TOOL_DEFINITION,
   FILE_EDIT_TOOL_DEFINITION,

@@ -55,6 +55,21 @@ export interface MentionRoutingInfo {
   mentionContext?: string;
 }
 
+// Pending interrupt tracking
+export interface PendingInterrupt {
+  id: MessageId;
+  urgency: "pause" | "stop" | "emergency";
+  message: string;
+  target?: ParticipantId;
+  raisedAt: string;
+  acknowledged: boolean;
+  acknowledgement?: {
+    by: ParticipantId;
+    action: "paused" | "stopped" | "acknowledged" | "ignored";
+    reason?: string;
+  };
+}
+
 export interface ToolProposal {
   id: MessageId;
   tool_name: string;

@@ -25,7 +25,6 @@ export interface ClaudeAgentConfig {
 }
 export declare class ClaudeAgent {
     private client;
-    private anthropic;
     private provider;
     private participantId;
     private sessionId;
@@ -81,7 +80,7 @@ export declare class ClaudeAgent {
      */
     private sendToolResultToClaude;
     /**
-     * Get all available tools (shell + MCP) for Claude API
+     * Get all available tools (builtin + MCP) for LLM provider
      */
     private getAllTools;
     proposeShellCommand(command: string, toolUseId?: string): Promise<MessageId>;

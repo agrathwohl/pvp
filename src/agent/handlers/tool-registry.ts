@@ -84,55 +84,89 @@ export interface ValidationResult {
 }
 
 /**
- * Validate tool input has required fields.
+ * Validate tool input has required fields with proper types.
  */
 export function validateToolInput(toolName: string, input: unknown): ValidationResult {
   if (!input) {
     return { valid: false, error: "Tool input was undefined" };
   }
 
+  if (typeof input !== "object") {
+    return { valid: false, error: "Tool input must be an object" };
+  }
+
   const data = input as Record<string, unknown>;
 
   switch (toolName) {
     case TOOL_NAMES.SHELL:
-      if (!data.command) {
-        return { valid: false, error: "Missing command field" };
+      if (!data.command || typeof data.command !== "string") {
+        return { valid: false, error: "Missing or invalid command field (must be string)" };
       }
       break;
 
     case TOOL_NAMES.FILE_WRITE:
-      if (!data.path || data.content === undefined) {
-        return { valid: false, error: "Missing path or content field" };
+      if (!data.path || typeof data.path !== "string") {
+        return { valid: false, error: "Missing or invalid path field (must be string)" };
+      }
+      if (data.content === undefined || typeof data.content !== "string") {
+        return { valid: false, error: "Missing or invalid content field (must be string)" };
+      }
+      if (data.create_dirs !== undefined && typeof data.create_dirs !== "boolean") {
+        return { valid: false, error: "Invalid create_dirs field (must be boolean)" };
       }
       break;
 
     case TOOL_NAMES.FILE_EDIT:
-      if (!data.path || data.old_text === undefined || data.new_text === undefined) {
-        return { valid: false, error: "Missing required fields (path, old_text, new_text)" };
+      if (!data.path || typeof data.path !== "string") {
+        return { valid: false, error: "Missing or invalid path field (must be string)" };
+      }
+      if (data.old_text === undefined || typeof data.old_text !== "string") {
+        return { valid: false, error: "Missing or invalid old_text field (must be string)" };
+      }
+      if (data.new_text === undefined || typeof data.new_text !== "string") {
+        return { valid: false, error: "Missing or invalid new_text field (must be string)" };
+      }
+      if (data.occurrence !== undefined && typeof data.occurrence !== "number") {
+        return { valid: false, error: "Invalid occurrence field (must be number)" };
       }
       break;
 
     case TOOL_NAMES.GIT_COMMIT:
-      if (!data.type || !data.description) {
-        return { valid: false, error: "Missing type or description" };
+      if (!data.type || typeof data.type !== "string") {
+        return { valid: false, error: "Missing or invalid type field (must be string)" };
+      }
+      if (!data.description || typeof data.description !== "string") {
+        return { valid: false, error: "Missing or invalid description field (must be string)" };
+      }
+      if (data.confidence !== undefined && typeof data.confidence !== "number") {
+        return { valid: false, error: "Invalid confidence field (must be number)" };
       }
       break;
 
     case TOOL_NAMES.NOTEBOOK_EXECUTE:
-      if (!data.notebook_path) {
-        return { valid: false, error: "Missing notebook_path" };
+      if (!data.notebook_path || typeof data.notebook_path !== "string") {
+        return { valid: false, error: "Missing or invalid notebook_path field (must be string)" };
+      }
+      if (data.output_format !== undefined && typeof data.output_format !== "string") {
+        return { valid: false, error: "Invalid output_format field (must be string)" };
       }
       break;
 
     case TOOL_NAMES.NPM:
-      if (!data.operation) {
-        return { valid: false, error: "Missing operation" };
+      if (!data.operation || typeof data.operation !== "string") {
+        return { valid: false, error: "Missing or invalid operation field (must be string)" };
+      }
+      if (data.args !== undefined && !Array.isArray(data.args)) {
+        return { valid: false, error: "Invalid args field (must be array)" };
+      }
+      if (data.package_manager !== undefined && typeof data.package_manager !== "string") {
+        return { valid: false, error: "Invalid package_manager field (must be string)" };
       }
       break;
 
     case TOOL_NAMES.TASKS:
-      if (!data.operation) {
-        return { valid: false, error: "Missing operation" };
+      if (!data.operation || typeof data.operation !== "string") {
+        return { valid: false, error: "Missing or invalid operation field (must be string)" };
       }
       break;
   }

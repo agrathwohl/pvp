@@ -1,5 +1,3 @@
-import Anthropic from "@anthropic-ai/sdk";
-import type { MessageParam, ToolUseBlock, Tool, ToolResultBlockParam } from "@anthropic-ai/sdk/resources/messages.js";
 import * as fs from "fs/promises";
 import path from "path";
 import {
@@ -9,6 +7,8 @@ import {
   type ToolDefinition,
   type ToolCall,
   type ContentBlock,
+  type ToolUseBlock,
+  type ToolResultBlock,
 } from "./providers/index.js";
 import { WebSocketClient } from "../transports/websocket.js";
 import { createMessage } from "../protocol/messages.js";
@@ -56,7 +56,6 @@ export interface ClaudeAgentConfig {
 
 export class ClaudeAgent {
   private client: WebSocketClient;
-  private anthropic: Anthropic;
   private provider: LLMProvider;
   private participantId: ParticipantId;
   private sessionId: SessionId | null = null;
@@ -66,7 +65,7 @@ export class ClaudeAgent {
   private workspaceInitialized: boolean = false;
   private agentName: string;
   private model: string;
-  private conversationHistory: MessageParam[] = [];
+  private conversationHistory: ConversationMessage[] = [];
   private shellToolHandler: ReturnType<typeof createShellToolHandler>;
   private fileToolHandler: ReturnType<typeof createFileToolHandler>;
   private gitCommitToolHandler: ReturnType<typeof createGitCommitToolHandler>;
@@ -118,11 +117,6 @@ export class ClaudeAgent {
     if (this.localWorkDir) {
       this.workingDirectory = this.localWorkDir;
     }
-
-    // Initialize Anthropic client
-    this.anthropic = new Anthropic({
-      apiKey: config.apiKey || process.env.ANTHROPIC_API_KEY,
-    });
 
     // Initialize LLM provider (defaults to AnthropicProvider)
     this.provider = config.provider ?? new AnthropicProvider({
@@ -542,21 +536,20 @@ export class ClaudeAgent {
         content: effectiveContent
       });
 
-      // Call Claude with tool
-      const response = await this.anthropic.messages.create({
+      // Call LLM provider with tools
+      const response = await this.provider.createCompletion({
         model: this.model,
-        max_tokens: 4096,
+        maxTokens: 4096,
         messages: this.conversationHistory,
         tools: this.getAllTools()
       });
 
       // Handle response content
-      let fullResponse = "";
+      let fullResponse = response.text;
       const toolUses: ToolUseBlock[] = [];
 
-      for (const block of response.content) {
+      for (const block of response.rawContent) {
         if (block.type === "text") {
-          fullResponse += block.text;
           const chunkMsg = createMessage(
             "response.chunk",
             this.sessionId,
@@ -567,14 +560,14 @@ export class ClaudeAgent {
           );
           this.client.send(chunkMsg);
         } else if (block.type === "tool_use") {
-          toolUses.push(block as ToolUseBlock);
+          toolUses.push(block);
         }
       }
 
       // Add assistant response to history
       this.conversationHistory.push({
         role: "assistant",
-        content: response.content
+        content: response.rawContent
       });
 
       // Create batch for tool_use blocks - Anthropic requires ALL tool_results together
@@ -600,7 +593,7 @@ export class ClaudeAgent {
         this.sessionId,
         this.participantId,
         {
-          finish_reason: response.stop_reason === "tool_use" ? "tool_use" : "complete",
+          finish_reason: response.finishReason === "tool_use" ? "tool_use" : "complete",
         }
       );
       this.client.send(responseEndMsg);
@@ -930,28 +923,27 @@ export class ClaudeAgent {
         content: [
           {
             type: "tool_result",
-            tool_use_id: toolUseId,
+            toolUseId: toolUseId,
             content: result.error ? `Error: ${result.error}` : result.output,
-            is_error: !result.success
-          } as ToolResultBlockParam
+            isError: !result.success
+          } as ToolResultBlock
         ]
       });
 
       // Call Claude again with the tool result
-      const response = await this.anthropic.messages.create({
+      const response = await this.provider.createCompletion({
         model: this.model,
-        max_tokens: 4096,
+        maxTokens: 4096,
         messages: this.conversationHistory,
         tools: this.getAllTools()
       });
 
       // Handle Claude's response to the tool result
-      let fullResponse = "";
+      let fullResponse = response.text;
       const toolUses: ToolUseBlock[] = [];
 
-      for (const block of response.content) {
+      for (const block of response.rawContent) {
         if (block.type === "text") {
-          fullResponse += block.text;
           const chunkMsg = createMessage(
             "response.chunk",
             this.sessionId,
@@ -962,14 +954,14 @@ export class ClaudeAgent {
           );
           this.client.send(chunkMsg);
         } else if (block.type === "tool_use") {
-          toolUses.push(block as ToolUseBlock);
+          toolUses.push(block);
         }
       }
 
       // Add Claude's response to history
       this.conversationHistory.push({
         role: "assistant",
-        content: response.content
+        content: response.rawContent
       });
 
       // Create batch for follow-up tool requests
@@ -995,7 +987,7 @@ export class ClaudeAgent {
         this.sessionId,
         this.participantId,
         {
-          finish_reason: response.stop_reason === "tool_use" ? "tool_use" : "complete",
+          finish_reason: response.finishReason === "tool_use" ? "tool_use" : "complete",
         }
       );
       this.client.send(responseEndMsg);
@@ -1021,18 +1013,18 @@ export class ClaudeAgent {
   }
 
   /**
-   * Get all available tools (shell + MCP) for Claude API
+   * Get all available tools (builtin + MCP) for LLM provider
    */
-  private getAllTools(): Tool[] {
+  private getAllTools(): ToolDefinition[] {
     // Start with builtin tool definitions
-    const tools: Tool[] = [...BUILTIN_TOOL_DEFINITIONS];
+    const tools: ToolDefinition[] = [...BUILTIN_TOOL_DEFINITIONS];
 
     // Add MCP tools with namespaced names
     for (const mcpTool of this.mcpManager.getAllTools()) {
       tools.push({
         name: mcpTool.namespaced_name,
         description: mcpTool.mcp_tool.description || `Tool from ${mcpTool.server_name}`,
-        input_schema: mcpTool.mcp_tool.inputSchema as Tool["input_schema"]
+        input_schema: mcpTool.mcp_tool.inputSchema as ToolDefinition["input_schema"]
       });
     }
 
@@ -1701,18 +1693,17 @@ export class ClaudeAgent {
       });
 
       // Call Claude for a brief acknowledgment
-      const response = await this.anthropic.messages.create({
+      const response = await this.provider.createCompletion({
         model: this.model,
-        max_tokens: 256, // Keep response brief
+        maxTokens: 256, // Keep response brief
         messages: this.conversationHistory,
         tools: [] // No tools for join acknowledgment
       });
 
       // Handle response
-      let fullResponse = "";
-      for (const block of response.content) {
+      const fullResponse = response.text;
+      for (const block of response.rawContent) {
         if (block.type === "text") {
-          fullResponse += block.text;
           const chunkMsg = createMessage(
             "response.chunk",
             this.sessionId,
@@ -1726,7 +1717,7 @@ export class ClaudeAgent {
       // Add assistant response to history
       this.conversationHistory.push({
         role: "assistant",
-        content: fullResponse
+        content: response.rawContent
       });
 
       // Send thinking end
@@ -2420,16 +2411,16 @@ export class ClaudeAgent {
     logger.info({ batchSize: this.pendingToolBatch.tools.size }, "All tools resolved, sending batch results to Claude");
 
     // Build tool_result blocks for all tools
-    const toolResults: ToolResultBlockParam[] = [];
+    const toolResults: ToolResultBlock[] = [];
 
     for (const [toolUseId, entry] of this.pendingToolBatch.tools) {
       if (!entry.result) continue;
 
       toolResults.push({
         type: "tool_result",
-        tool_use_id: toolUseId,
+        toolUseId: toolUseId,
         content: entry.result.error ? `Error: ${entry.result.error}` : entry.result.output,
-        is_error: !entry.result.success,
+        isError: !entry.result.success,
       });
 
       // Clean up tracking maps
@@ -2499,20 +2490,19 @@ export class ClaudeAgent {
       });
 
       // Call Claude again with all tool results
-      const response = await this.anthropic.messages.create({
+      const response = await this.provider.createCompletion({
         model: this.model,
-        max_tokens: 4096,
+        maxTokens: 4096,
         messages: this.conversationHistory,
         tools: this.getAllTools(),
       });
 
       // Handle Claude's response
-      let fullResponse = "";
+      let fullResponse = response.text;
       const toolUses: ToolUseBlock[] = [];
 
-      for (const block of response.content) {
+      for (const block of response.rawContent) {
         if (block.type === "text") {
-          fullResponse += block.text;
           const chunkMsg = createMessage(
             "response.chunk",
             this.sessionId,
@@ -2523,14 +2513,14 @@ export class ClaudeAgent {
           );
           this.client.send(chunkMsg);
         } else if (block.type === "tool_use") {
-          toolUses.push(block as ToolUseBlock);
+          toolUses.push(block);
         }
       }
 
       // Add Claude's response to history
       this.conversationHistory.push({
         role: "assistant",
-        content: response.content,
+        content: response.rawContent,
       });
 
       // Create new batch if Claude requests more tools
@@ -2556,7 +2546,7 @@ export class ClaudeAgent {
         this.sessionId,
         this.participantId,
         {
-          finish_reason: response.stop_reason === "tool_use" ? "tool_use" : "complete",
+          finish_reason: response.finishReason === "tool_use" ? "tool_use" : "complete",
         }
       );
       this.client.send(responseEndMsg);

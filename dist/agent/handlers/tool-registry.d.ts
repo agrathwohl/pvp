@@ -51,7 +51,7 @@ export interface ValidationResult {
     error?: string;
 }
 /**
- * Validate tool input has required fields.
+ * Validate tool input has required fields with proper types.
  */
 export declare function validateToolInput(toolName: string, input: unknown): ValidationResult;
 /**

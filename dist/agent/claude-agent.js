@@ -1,4 +1,3 @@
-import Anthropic from "@anthropic-ai/sdk";
 import * as fs from "fs/promises";
 import path from "path";
 import { AnthropicProvider, } from "./providers/index.js";
@@ -18,7 +17,6 @@ import { BUILTIN_TOOL_DEFINITIONS } from "./tools/tool-definitions.js";
 import { MCPManager } from "./mcp/index.js";
 export class ClaudeAgent {
     client;
-    anthropic;
     provider;
     participantId;
     sessionId = null;
@@ -61,10 +59,6 @@ export class ClaudeAgent {
         if (this.localWorkDir) {
             this.workingDirectory = this.localWorkDir;
         }
-        // Initialize Anthropic client
-        this.anthropic = new Anthropic({
-            apiKey: config.apiKey || process.env.ANTHROPIC_API_KEY,
-        });
         // Initialize LLM provider (defaults to AnthropicProvider)
         this.provider = config.provider ?? new AnthropicProvider({
             apiKey: config.apiKey || process.env.ANTHROPIC_API_KEY || "",
@@ -421,19 +415,18 @@ export class ClaudeAgent {
                 role: "user",
                 content: effectiveContent
             });
-            // Call Claude with tool
-            const response = await this.anthropic.messages.create({
+            // Call LLM provider with tools
+            const response = await this.provider.createCompletion({
                 model: this.model,
-                max_tokens: 4096,
+                maxTokens: 4096,
                 messages: this.conversationHistory,
                 tools: this.getAllTools()
             });
             // Handle response content
-            let fullResponse = "";
+            let fullResponse = response.text;
             const toolUses = [];
-            for (const block of response.content) {
+            for (const block of response.rawContent) {
                 if (block.type === "text") {
-                    fullResponse += block.text;
                     const chunkMsg = createMessage("response.chunk", this.sessionId, this.participantId, {
                         text: block.text
                     });
@@ -446,7 +439,7 @@ export class ClaudeAgent {
             // Add assistant response to history
             this.conversationHistory.push({
                 role: "assistant",
-                content: response.content
+                content: response.rawContent
             });
             // Create batch for tool_use blocks - Anthropic requires ALL tool_results together
             if (toolUses.length > 0) {
@@ -460,7 +453,7 @@ export class ClaudeAgent {
             this.client.send(thinkingEndMsg);
             // Send response end
             const responseEndMsg = createMessage("response.end", this.sessionId, this.participantId, {
-                finish_reason: response.stop_reason === "tool_use" ? "tool_use" : "complete",
+                finish_reason: response.finishReason === "tool_use" ? "tool_use" : "complete",
             });
             this.client.send(responseEndMsg);
             logger.info(`[${this.agentName}] Response sent (${fullResponse.length} chars, ${toolUses.length} tools)`);
@@ -730,25 +723,24 @@ export class ClaudeAgent {
                 content: [
                     {
                         type: "tool_result",
-                        tool_use_id: toolUseId,
+                        toolUseId: toolUseId,
                         content: result.error ? `Error: ${result.error}` : result.output,
-                        is_error: !result.success
+                        isError: !result.success
                     }
                 ]
             });
             // Call Claude again with the tool result
-            const response = await this.anthropic.messages.create({
+            const response = await this.provider.createCompletion({
                 model: this.model,
-                max_tokens: 4096,
+                maxTokens: 4096,
                 messages: this.conversationHistory,
                 tools: this.getAllTools()
             });
             // Handle Claude's response to the tool result
-            let fullResponse = "";
+            let fullResponse = response.text;
             const toolUses = [];
-            for (const block of response.content) {
+            for (const block of response.rawContent) {
                 if (block.type === "text") {
-                    fullResponse += block.text;
                     const chunkMsg = createMessage("response.chunk", this.sessionId, this.participantId, {
                         text: block.text
                     });
@@ -761,7 +753,7 @@ export class ClaudeAgent {
             // Add Claude's response to history
             this.conversationHistory.push({
                 role: "assistant",
-                content: response.content
+                content: response.rawContent
             });
             // Create batch for follow-up tool requests
             if (toolUses.length > 0) {
@@ -775,7 +767,7 @@ export class ClaudeAgent {
             this.client.send(thinkingEndMsg);
             // Send response end
             const responseEndMsg = createMessage("response.end", this.sessionId, this.participantId, {
-                finish_reason: response.stop_reason === "tool_use" ? "tool_use" : "complete",
+                finish_reason: response.finishReason === "tool_use" ? "tool_use" : "complete",
             });
             this.client.send(responseEndMsg);
             logger.info(`[${this.agentName}] Sent tool result to Claude and received response (${fullResponse.length} chars, ${toolUses.length} additional tools)`);
@@ -797,7 +789,7 @@ export class ClaudeAgent {
         }
     }
     /**
-     * Get all available tools (shell + MCP) for Claude API
+     * Get all available tools (builtin + MCP) for LLM provider
      */
     getAllTools() {
         // Start with builtin tool definitions
@@ -1298,17 +1290,16 @@ export class ClaudeAgent {
                 content: joinNotification
             });
             // Call Claude for a brief acknowledgment
-            const response = await this.anthropic.messages.create({
+            const response = await this.provider.createCompletion({
                 model: this.model,
-                max_tokens: 256, // Keep response brief
+                maxTokens: 256, // Keep response brief
                 messages: this.conversationHistory,
                 tools: [] // No tools for join acknowledgment
             });
             // Handle response
-            let fullResponse = "";
-            for (const block of response.content) {
+            const fullResponse = response.text;
+            for (const block of response.rawContent) {
                 if (block.type === "text") {
-                    fullResponse += block.text;
                     const chunkMsg = createMessage("response.chunk", this.sessionId, this.participantId, { text: block.text });
                     this.client.send(chunkMsg);
                 }
@@ -1316,7 +1307,7 @@ export class ClaudeAgent {
             // Add assistant response to history
             this.conversationHistory.push({
                 role: "assistant",
-                content: fullResponse
+                content: response.rawContent
             });
             // Send thinking end
             const thinkingEndMsg = createMessage("thinking.end", this.sessionId, this.participantId, {
@@ -1850,9 +1841,9 @@ export class ClaudeAgent {
                 continue;
             toolResults.push({
                 type: "tool_result",
-                tool_use_id: toolUseId,
+                toolUseId: toolUseId,
                 content: entry.result.error ? `Error: ${entry.result.error}` : entry.result.output,
-                is_error: !entry.result.success,
+                isError: !entry.result.success,
             });
             // Clean up tracking maps
             if (entry.proposalId) {
@@ -1898,18 +1889,17 @@ export class ClaudeAgent {
                 content: toolResults,
             });
             // Call Claude again with all tool results
-            const response = await this.anthropic.messages.create({
+            const response = await this.provider.createCompletion({
                 model: this.model,
-                max_tokens: 4096,
+                maxTokens: 4096,
                 messages: this.conversationHistory,
                 tools: this.getAllTools(),
             });
             // Handle Claude's response
-            let fullResponse = "";
+            let fullResponse = response.text;
             const toolUses = [];
-            for (const block of response.content) {
+            for (const block of response.rawContent) {
                 if (block.type === "text") {
-                    fullResponse += block.text;
                     const chunkMsg = createMessage("response.chunk", this.sessionId, this.participantId, {
                         text: block.text,
                     });
@@ -1922,7 +1912,7 @@ export class ClaudeAgent {
             // Add Claude's response to history
             this.conversationHistory.push({
                 role: "assistant",
-                content: response.content,
+                content: response.rawContent,
             });
             // Create new batch if Claude requests more tools
             if (toolUses.length > 0) {
@@ -1936,7 +1926,7 @@ export class ClaudeAgent {
             this.client.send(thinkingEndMsg);
             // Send response end
             const responseEndMsg = createMessage("response.end", this.sessionId, this.participantId, {
-                finish_reason: response.stop_reason === "tool_use" ? "tool_use" : "complete",
+                finish_reason: response.finishReason === "tool_use" ? "tool_use" : "complete",
             });
             this.client.send(responseEndMsg);
             logger.info(`[${this.agentName}] Sent ${toolResults.length} tool results to Claude (${fullResponse.length} chars, ${toolUses.length} additional tools)`);

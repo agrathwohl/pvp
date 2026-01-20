@@ -21,6 +21,7 @@ export class AnthropicProvider {
         const response = await this.client.messages.create({
             model: request.model,
             max_tokens: request.maxTokens ?? 4096,
+            system: request.systemPrompt,
             messages,
             tools,
         });

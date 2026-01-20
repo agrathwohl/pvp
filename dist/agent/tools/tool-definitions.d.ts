@@ -4,19 +4,19 @@
  * Static tool definitions for all built-in tools. These schemas define
  * the interface Claude uses to invoke tools with proper parameters.
  */
-import type { Tool } from "@anthropic-ai/sdk/resources/messages.js";
-export declare const SHELL_TOOL_DEFINITION: Tool;
-export declare const FILE_WRITE_TOOL_DEFINITION: Tool;
-export declare const FILE_EDIT_TOOL_DEFINITION: Tool;
-export declare const GIT_COMMIT_TOOL_DEFINITION: Tool;
-export declare const NOTEBOOK_EXECUTE_TOOL_DEFINITION: Tool;
-export declare const NPM_TOOL_DEFINITION: Tool;
-export declare const TASKS_TOOL_DEFINITION: Tool;
+import type { ToolDefinition } from "../providers/types.js";
+export declare const SHELL_TOOL_DEFINITION: ToolDefinition;
+export declare const FILE_WRITE_TOOL_DEFINITION: ToolDefinition;
+export declare const FILE_EDIT_TOOL_DEFINITION: ToolDefinition;
+export declare const GIT_COMMIT_TOOL_DEFINITION: ToolDefinition;
+export declare const NOTEBOOK_EXECUTE_TOOL_DEFINITION: ToolDefinition;
+export declare const NPM_TOOL_DEFINITION: ToolDefinition;
+export declare const TASKS_TOOL_DEFINITION: ToolDefinition;
 /**
  * All built-in tool definitions.
  * MCP tools are added dynamically by the agent.
  */
-export declare const BUILTIN_TOOL_DEFINITIONS: Tool[];
+export declare const BUILTIN_TOOL_DEFINITIONS: ToolDefinition[];
 /**
  * Tool names for quick lookup
  */
