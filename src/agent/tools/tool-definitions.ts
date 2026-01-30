@@ -222,6 +222,118 @@ export const TASKS_TOOL_DEFINITION: ToolDefinition = {
 };
 
 // ===========================================================================
+// Process Monitor Tool
+// ===========================================================================
+
+export const PROCESS_MONITOR_TOOL_DEFINITION: ToolDefinition = {
+  name: "process_monitor",
+  description: `Start monitoring one or more data sources (log files, command output, URLs) on a repeating schedule.
+
+The agent will:
+- Periodically collect data from all sources at the specified interval
+- Analyze patterns, trends, and anomalies in the data
+- Generate insights and recommendations
+- Create visualizations using Jupyter notebooks (if visualize=true)
+- Automatically stop based on the configured stop condition
+
+Stop conditions:
+- "duration": Stop after specified number of seconds
+- "clock_time": Stop at a specific time (ISO format or HH:MM:SS)
+- "auto_detect": Stop when all sources stop producing new data
+- "manual": Run until explicitly stopped
+
+Use this for monitoring:
+- Application logs during load tests or deployments
+- System metrics from long-running processes
+- Build/CI output during complex operations
+- API endpoints returning metrics or status
+- Any data streams requiring periodic analysis`,
+  input_schema: {
+    type: "object",
+    properties: {
+      sources: {
+        type: "array",
+        description: "Data sources to monitor",
+        items: {
+          type: "object",
+          properties: {
+            type: {
+              type: "string",
+              enum: ["file", "command", "url"],
+              description: "Source type: file (tail-like), command (execute repeatedly), url (HTTP fetch)"
+            },
+            path: {
+              type: "string",
+              description: "File path to monitor (for file type)"
+            },
+            command: {
+              type: "string",
+              description: "Shell command to execute (for command type)"
+            },
+            url: {
+              type: "string",
+              description: "URL endpoint to fetch (for url type)"
+            },
+            label: {
+              type: "string",
+              description: "Human-readable label for this source in reports"
+            }
+          },
+          required: ["type"]
+        },
+        minItems: 1
+      },
+      interval_seconds: {
+        type: "number",
+        description: "Seconds between monitoring cycles (default: 30)",
+        minimum: 1
+      },
+      stop_condition: {
+        type: "object",
+        description: "When to stop monitoring",
+        properties: {
+          type: {
+            type: "string",
+            enum: ["duration", "clock_time", "auto_detect", "manual"],
+            description: "Stop condition type"
+          },
+          duration_seconds: {
+            type: "number",
+            description: "For duration type: total seconds to monitor"
+          },
+          stop_at: {
+            type: "string",
+            description: "For clock_time type: ISO timestamp or HH:MM:SS"
+          },
+          idle_threshold_seconds: {
+            type: "number",
+            description: "For auto_detect type: seconds of no new data before stopping (default: 60)"
+          }
+        },
+        required: ["type"]
+      },
+      analysis_prompt: {
+        type: "string",
+        description: "Custom analysis guidance for interpreting the collected data"
+      },
+      visualize: {
+        type: "boolean",
+        description: "Generate a Jupyter notebook with visualizations (default: true)"
+      },
+      output_dir: {
+        type: "string",
+        description: "Directory to save data files and visualizations"
+      },
+      session_name: {
+        type: "string",
+        description: "Human-readable name for this monitoring session"
+      }
+    },
+    required: ["sources", "stop_condition"]
+  }
+};
+
+// ===========================================================================
 // Combined Export
 // ===========================================================================
 
@@ -237,6 +349,7 @@ export const BUILTIN_TOOL_DEFINITIONS: ToolDefinition[] = [
   NOTEBOOK_EXECUTE_TOOL_DEFINITION,
   NPM_TOOL_DEFINITION,
   TASKS_TOOL_DEFINITION,
+  PROCESS_MONITOR_TOOL_DEFINITION,
 ];
 
 /**
@@ -250,6 +363,7 @@ export const TOOL_NAMES = {
   NOTEBOOK_EXECUTE: "notebook_execute",
   NPM: "npm",
   TASKS: "tasks",
+  PROCESS_MONITOR: "process_monitor",
 } as const;
 
 export type BuiltinToolName = typeof TOOL_NAMES[keyof typeof TOOL_NAMES];
