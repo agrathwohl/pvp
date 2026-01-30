@@ -2,6 +2,7 @@ import { type LLMProvider } from "./providers/index.js";
 import { type NotebookOutputFormat } from "./tools/notebook-tool.js";
 import { type NpmOperation, type PackageManager } from "./tools/npm-tool.js";
 import { type TaskOperationArgs } from "./tools/tasks-tool.js";
+import { type ProcessMonitorInput } from "./tools/monitor-tool.js";
 import { type MCPServerConfig } from "./mcp/index.js";
 import type { SessionId, MessageId } from "../protocol/types.js";
 export interface ClaudeAgentConfig {
@@ -47,6 +48,8 @@ export declare class ClaudeAgent {
     private npmProposals;
     private tasksToolHandler;
     private tasksProposals;
+    private monitorToolHandler;
+    private monitorProposals;
     private strictMode;
     private toolUseIdToProposalId;
     private sessionParticipants;
@@ -119,6 +122,14 @@ export declare class ClaudeAgent {
      * Execute a notebook after approval
      */
     private executeNotebook;
+    /**
+     * Propose a process monitor operation to the session
+     */
+    proposeMonitor(input: ProcessMonitorInput, toolUseId?: string): Promise<MessageId>;
+    /**
+     * Execute a process monitor operation after approval
+     */
+    private executeMonitor;
     /**
      * Propose an npm operation to the session
      */

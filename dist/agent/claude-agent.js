@@ -13,6 +13,7 @@ import { createGitCommitToolHandler } from "./tools/git-commit-tool.js";
 import { createNotebookToolHandler } from "./tools/notebook-tool.js";
 import { createNpmToolHandler } from "./tools/npm-tool.js";
 import { createTasksToolHandler, TASKS_CONTEXT_KEY } from "./tools/tasks-tool.js";
+import { createMonitorToolHandler } from "./tools/monitor-tool.js";
 import { BUILTIN_TOOL_DEFINITIONS } from "./tools/tool-definitions.js";
 import { MCPManager } from "./mcp/index.js";
 export class ClaudeAgent {
@@ -39,6 +40,8 @@ export class ClaudeAgent {
     npmProposals = new Map();
     tasksToolHandler;
     tasksProposals = new Map();
+    monitorToolHandler;
+    monitorProposals = new Map();
     strictMode = false;
     toolUseIdToProposalId = new Map();
     // Track session participants for @mention filtering
@@ -77,6 +80,8 @@ export class ClaudeAgent {
         this.npmToolHandler = createNpmToolHandler();
         // Initialize tasks tool handler
         this.tasksToolHandler = createTasksToolHandler();
+        // Initialize monitor tool handler
+        this.monitorToolHandler = createMonitorToolHandler();
         // Initialize strict mode
         this.strictMode = config.strictMode || false;
         // Initialize MCP manager
@@ -522,6 +527,12 @@ export class ClaudeAgent {
         if (this.tasksProposals.has(tool_proposal)) {
             logger.info({ toolProposal: tool_proposal, approvers: approved_by }, "Executing tasks operation");
             await this.executeTasks(tool_proposal);
+            return;
+        }
+        // Check if this is a process monitor proposal
+        if (this.monitorProposals.has(tool_proposal)) {
+            logger.info({ toolProposal: tool_proposal, approvers: approved_by }, "Executing process monitor");
+            await this.executeMonitor(tool_proposal);
             return;
         }
         // Retrieve the shell tool proposal
@@ -1136,6 +1147,97 @@ export class ClaudeAgent {
         catch (error) {
             logger.error({ error, proposalId }, "Notebook execution failed");
             this.notebookProposals.delete(proposalId);
+            this.updateBatchResult(proposalId, {
+                success: false,
+                output: "",
+                error: error instanceof Error ? error.message : "Unknown error",
+            });
+        }
+    }
+    /**
+     * Propose a process monitor operation to the session
+     */
+    async proposeMonitor(input, toolUseId) {
+        if (!this.sessionId) {
+            throw new Error("Not connected to a session");
+        }
+        try {
+            const proposalMsg = this.monitorToolHandler.proposeMonitor(input, this.sessionId, this.participantId);
+            // Store the proposal for later execution
+            this.monitorProposals.set(proposalMsg.id, {
+                input,
+                toolUseId: toolUseId || "",
+            });
+            // Track Claude's tool use ID if provided
+            if (toolUseId) {
+                this.toolUseIdToProposalId.set(proposalMsg.id, toolUseId);
+                // Update batch with proposal ID
+                if (this.pendingToolBatch) {
+                    const batchEntry = this.pendingToolBatch.tools.get(toolUseId);
+                    if (batchEntry) {
+                        batchEntry.proposalId = proposalMsg.id;
+                    }
+                }
+            }
+            // Send the proposal
+            this.client.send(proposalMsg);
+            logger.info({
+                proposalId: proposalMsg.id,
+                toolUseId,
+                sources: input.sources.length,
+                stopCondition: input.stop_condition.type,
+            }, "Proposed process monitoring");
+            return proposalMsg.id;
+        }
+        catch (error) {
+            logger.error({ error }, "Failed to propose process monitoring");
+            throw error;
+        }
+    }
+    /**
+     * Execute a process monitor operation after approval
+     */
+    async executeMonitor(proposalId) {
+        if (!this.sessionId)
+            return;
+        const proposal = this.monitorProposals.get(proposalId);
+        if (!proposal) {
+            logger.warn({ proposalId }, "Monitor proposal not found");
+            return;
+        }
+        const { input } = proposal;
+        logger.info({
+            proposalId,
+            sources: input.sources.length,
+            interval: input.interval_seconds,
+            stopCondition: input.stop_condition.type,
+        }, "Executing approved process monitor");
+        try {
+            let result = null;
+            await this.monitorToolHandler.executeMonitor(proposalId, input, this.sessionId, this.participantId, (msg) => {
+                this.client.send(msg);
+                // Capture tool.result message
+                if (msg.type === "tool.result") {
+                    const payload = msg.payload;
+                    result = {
+                        success: payload.success,
+                        output: typeof payload.result === "string"
+                            ? payload.result
+                            : JSON.stringify(payload.result || {}),
+                        error: payload.error,
+                    };
+                }
+            }, this.workingDirectory ?? undefined);
+            // Clean up
+            this.monitorProposals.delete(proposalId);
+            // Update batch with result
+            if (result) {
+                this.updateBatchResult(proposalId, result);
+            }
+        }
+        catch (error) {
+            logger.error({ error, proposalId }, "Process monitor execution failed");
+            this.monitorProposals.delete(proposalId);
             this.updateBatchResult(proposalId, {
                 success: false,
                 output: "",
@@ -2004,7 +2106,12 @@ export class ClaudeAgent {
                     const input = toolUse.input;
                     if (!input.command) {
                         logger.error({ toolUseId: toolUse.id }, "Shell command input missing command field");
-                        this.markToolFailed(toolUse.id, "Missing command field");
+                        this.markToolFailed(toolUse.id, `TOOL VALIDATION FAILED: execute_shell_command is missing the required "command" field. ` +
+                            `You attempted to execute a shell command but provided no command string. ` +
+                            `CRITICAL INSTRUCTION: You MUST now do the following in order: ` +
+                            `1) Explain to the user in plain language what you were trying to do and exactly what went wrong with your tool call. ` +
+                            `2) Ask the user whether they want you to retry the operation or do something else instead. ` +
+                            `3) WAIT for the user's response before taking any further action. DO NOT automatically retry.`);
                         continue;
                     }
                     logger.info({ command: input.command, toolUseId: toolUse.id }, "Claude requested shell command execution");
@@ -2013,8 +2120,18 @@ export class ClaudeAgent {
                 else if (toolUse.name === "file_write") {
                     const input = toolUse.input;
                     if (!input.path || input.content === undefined) {
+                        const missingFields = [];
+                        if (!input.path)
+                            missingFields.push("path");
+                        if (input.content === undefined)
+                            missingFields.push("content");
                         logger.error({ toolUseId: toolUse.id, hasPath: !!input.path, hasContent: input.content !== undefined }, "File write input missing required fields");
-                        this.markToolFailed(toolUse.id, "Missing path or content field");
+                        this.markToolFailed(toolUse.id, `TOOL VALIDATION FAILED: file_write is missing required field(s): ${missingFields.join(", ")}. ` +
+                            `You attempted: path=${input.path ? `"${input.path}"` : "MISSING"}, content=${input.content === undefined ? "MISSING" : "present"}. ` +
+                            `CRITICAL INSTRUCTION: You MUST now do the following in order: ` +
+                            `1) Explain to the user in plain language what you were trying to do and exactly what went wrong with your tool call. ` +
+                            `2) Ask the user whether they want you to retry the operation or do something else instead. ` +
+                            `3) WAIT for the user's response before taking any further action. DO NOT automatically retry.`);
                         continue;
                     }
                     logger.info({ path: input.path, bytes: input.content.length, toolUseId: toolUse.id }, "Claude requested file write");
@@ -2023,8 +2140,20 @@ export class ClaudeAgent {
                 else if (toolUse.name === "file_edit") {
                     const input = toolUse.input;
                     if (!input.path || input.old_text === undefined || input.new_text === undefined) {
-                        logger.error({ toolUseId: toolUse.id }, "File edit input missing required fields");
-                        this.markToolFailed(toolUse.id, "Missing required fields");
+                        const missingFields = [];
+                        if (!input.path)
+                            missingFields.push("path");
+                        if (input.old_text === undefined)
+                            missingFields.push("old_text");
+                        if (input.new_text === undefined)
+                            missingFields.push("new_text");
+                        logger.error({ toolUseId: toolUse.id, missingFields }, "File edit input missing required fields");
+                        this.markToolFailed(toolUse.id, `TOOL VALIDATION FAILED: file_edit is missing required field(s): ${missingFields.join(", ")}. ` +
+                            `You attempted: path=${input.path ? `"${input.path}"` : "MISSING"}, old_text=${input.old_text === undefined ? "MISSING" : "present"}, new_text=${input.new_text === undefined ? "MISSING" : "present"}. ` +
+                            `CRITICAL INSTRUCTION: You MUST now do the following in order: ` +
+                            `1) Explain to the user in plain language what you were trying to do and exactly what went wrong with your tool call. ` +
+                            `2) Ask the user whether they want you to retry the operation or do something else instead. ` +
+                            `3) WAIT for the user's response before taking any further action. DO NOT automatically retry.`);
                         continue;
                     }
                     logger.info({ path: input.path, toolUseId: toolUse.id }, "Claude requested file edit");
@@ -2033,8 +2162,18 @@ export class ClaudeAgent {
                 else if (toolUse.name === "git_commit") {
                     const input = toolUse.input;
                     if (!input.type || !input.description) {
-                        logger.error({ toolUseId: toolUse.id }, "Git commit input missing required fields");
-                        this.markToolFailed(toolUse.id, "Missing type or description");
+                        const missingFields = [];
+                        if (!input.type)
+                            missingFields.push("type");
+                        if (!input.description)
+                            missingFields.push("description");
+                        logger.error({ toolUseId: toolUse.id, missingFields }, "Git commit input missing required fields");
+                        this.markToolFailed(toolUse.id, `TOOL VALIDATION FAILED: git_commit is missing required field(s): ${missingFields.join(", ")}. ` +
+                            `You attempted: type=${input.type ? `"${input.type}"` : "MISSING"}, description=${input.description ? "present" : "MISSING"}. ` +
+                            `CRITICAL INSTRUCTION: You MUST now do the following in order: ` +
+                            `1) Explain to the user in plain language what you were trying to do and exactly what went wrong with your tool call. ` +
+                            `2) Ask the user whether they want you to retry the operation or do something else instead. ` +
+                            `3) WAIT for the user's response before taking any further action. DO NOT automatically retry.`);
                         continue;
                     }
                     logger.info({ type: input.type, description: input.description, toolUseId: toolUse.id }, "Claude requested git commit");
@@ -2044,7 +2183,12 @@ export class ClaudeAgent {
                     const input = toolUse.input;
                     if (!input.notebook_path) {
                         logger.error({ toolUseId: toolUse.id }, "Notebook execute input missing notebook_path field");
-                        this.markToolFailed(toolUse.id, "Missing notebook_path");
+                        this.markToolFailed(toolUse.id, `TOOL VALIDATION FAILED: notebook_execute is missing the required "notebook_path" field. ` +
+                            `You attempted to execute a notebook but did not specify which notebook file to run. ` +
+                            `CRITICAL INSTRUCTION: You MUST now do the following in order: ` +
+                            `1) Explain to the user in plain language what you were trying to do and exactly what went wrong with your tool call. ` +
+                            `2) Ask the user whether they want you to retry the operation or do something else instead. ` +
+                            `3) WAIT for the user's response before taking any further action. DO NOT automatically retry.`);
                         continue;
                     }
                     logger.info({ notebookPath: input.notebook_path, outputFormat: input.output_format || "notebook", toolUseId: toolUse.id }, "Claude requested notebook execution");
@@ -2069,6 +2213,35 @@ export class ClaudeAgent {
                     }
                     logger.info({ operation: input.operation, toolUseId: toolUse.id }, "Claude requested tasks operation");
                     await this.proposeTasksOperation(input, toolUse.id);
+                }
+                else if (toolUse.name === "process_monitor") {
+                    const input = toolUse.input;
+                    if (!input.sources || input.sources.length === 0) {
+                        logger.error({ toolUseId: toolUse.id }, "Process monitor input missing sources");
+                        this.markToolFailed(toolUse.id, `TOOL VALIDATION FAILED: process_monitor requires at least one data source. ` +
+                            `You attempted to start monitoring but did not specify any sources to monitor. ` +
+                            `CRITICAL INSTRUCTION: You MUST now do the following in order: ` +
+                            `1) Explain to the user in plain language what you were trying to do and exactly what went wrong with your tool call. ` +
+                            `2) Ask the user whether they want you to retry the operation or do something else instead. ` +
+                            `3) WAIT for the user's response before taking any further action. DO NOT automatically retry.`);
+                        continue;
+                    }
+                    if (!input.stop_condition) {
+                        logger.error({ toolUseId: toolUse.id }, "Process monitor input missing stop_condition");
+                        this.markToolFailed(toolUse.id, `TOOL VALIDATION FAILED: process_monitor requires a stop_condition. ` +
+                            `You must specify when the monitoring should stop (duration, clock_time, auto_detect, or manual). ` +
+                            `CRITICAL INSTRUCTION: You MUST now do the following in order: ` +
+                            `1) Explain to the user in plain language what you were trying to do and exactly what went wrong with your tool call. ` +
+                            `2) Ask the user whether they want you to retry the operation or do something else instead. ` +
+                            `3) WAIT for the user's response before taking any further action. DO NOT automatically retry.`);
+                        continue;
+                    }
+                    logger.info({
+                        sources: input.sources.length,
+                        stopCondition: input.stop_condition.type,
+                        toolUseId: toolUse.id
+                    }, "Claude requested process monitoring");
+                    await this.proposeMonitor(input, toolUse.id);
                 }
                 else if (this.mcpManager.isMCPTool(toolUse.name)) {
                     logger.info({ tool: toolUse.name, toolUseId: toolUse.id }, "Claude requested MCP tool execution");

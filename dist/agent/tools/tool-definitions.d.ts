@@ -12,6 +12,7 @@ export declare const GIT_COMMIT_TOOL_DEFINITION: ToolDefinition;
 export declare const NOTEBOOK_EXECUTE_TOOL_DEFINITION: ToolDefinition;
 export declare const NPM_TOOL_DEFINITION: ToolDefinition;
 export declare const TASKS_TOOL_DEFINITION: ToolDefinition;
+export declare const PROCESS_MONITOR_TOOL_DEFINITION: ToolDefinition;
 /**
  * All built-in tool definitions.
  * MCP tools are added dynamically by the agent.
@@ -28,5 +29,6 @@ export declare const TOOL_NAMES: {
     readonly NOTEBOOK_EXECUTE: "notebook_execute";
     readonly NPM: "npm";
     readonly TASKS: "tasks";
+    readonly PROCESS_MONITOR: "process_monitor";
 };
 export type BuiltinToolName = typeof TOOL_NAMES[keyof typeof TOOL_NAMES];
