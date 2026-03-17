@@ -17,6 +17,9 @@ import { ulid } from "../utils/ulid.js";
 import { logger } from "../utils/logger.js";
 import { createShellToolHandler } from "./tools/shell-tool.js";
 import { categorizeCommand } from "./tools/shell-executor.js";
+import { createNushellToolHandler } from "./tools/nushell-tool.js";
+import { categorizeNushellCommand } from "./tools/nushell-executor.js";
+import type { NushellCommand } from "./tools/nushell-executor.js";
 import { createFileToolHandler } from "./tools/file-tool.js";
 import { categorizeFilePath, isPathBlocked, type FileWriteCommand, type FileEditCommand } from "./tools/file-executor.js";
 import { createGitCommitToolHandler, type GitCommitArgs, type CommitSessionContext } from "./tools/git-commit-tool.js";
@@ -24,7 +27,7 @@ import { createNotebookToolHandler, type NotebookOutputFormat } from "./tools/no
 import { createNpmToolHandler, type NpmOperation, type PackageManager } from "./tools/npm-tool.js";
 import { createTasksToolHandler, type TaskOperationArgs, type SerializedTasksState, TASKS_CONTEXT_KEY } from "./tools/tasks-tool.js";
 import { createMonitorToolHandler, type ProcessMonitorInput } from "./tools/monitor-tool.js";
-import { BUILTIN_TOOL_DEFINITIONS } from "./tools/tool-definitions.js";
+import { BUILTIN_TOOL_DEFINITIONS, NUSHELL_TOOL_DEFINITION } from "./tools/tool-definitions.js";
 import { MCPManager, type MCPServerConfig, type MCPToolDefinition } from "./mcp/index.js";
 import type {
   AnyMessage,
@@ -68,9 +71,12 @@ export class ClaudeAgent {
   private model: string;
   private conversationHistory: ConversationMessage[] = [];
   private shellToolHandler: ReturnType<typeof createShellToolHandler>;
+  private nushellToolHandler: ReturnType<typeof createNushellToolHandler> | null = null;
+  private nushellPath: string | null = null;
   private fileToolHandler: ReturnType<typeof createFileToolHandler>;
   private gitCommitToolHandler: ReturnType<typeof createGitCommitToolHandler>;
   private toolProposals: Map<MessageId, { command: ShellCommand; proposalMsg: AnyMessage }> = new Map();
+  private nushellProposals: Map<MessageId, { command: NushellCommand; nuPath: string; toolUseId: string }> = new Map();
   private fileWriteProposals: Map<MessageId, { path: string; content: string; createDirs: boolean; toolUseId: string }> = new Map();
   private fileEditProposals: Map<MessageId, { path: string; oldText: string; newText: string; occurrence: number; toolUseId: string }> = new Map();
   private gitCommitProposals: Map<MessageId, { args: GitCommitArgs; context: CommitSessionContext; toolUseId: string }> = new Map();
@@ -149,6 +155,9 @@ export class ClaudeAgent {
 
     // Initialize monitor tool handler
     this.monitorToolHandler = createMonitorToolHandler();
+
+    // Detect nushell availability
+    this.detectNushell();
 
     // Initialize strict mode
     this.strictMode = config.strictMode || false;
@@ -681,6 +690,13 @@ export class ClaudeAgent {
       return;
     }
 
+    // Check if this is a nushell command proposal
+    if (this.nushellProposals.has(tool_proposal)) {
+      logger.info({ toolProposal: tool_proposal, approvers: approved_by }, "Executing approved nushell command");
+      await this.executeNushellCommand(tool_proposal);
+      return;
+    }
+
     // Check if this is a process monitor proposal
     if (this.monitorProposals.has(tool_proposal)) {
       logger.info({ toolProposal: tool_proposal, approvers: approved_by }, "Executing process monitor");
@@ -864,6 +880,18 @@ export class ClaudeAgent {
       return;
     }
 
+    // Check if this is a nushell command proposal
+    const nushellProposal = this.nushellProposals.get(proposalId);
+    if (nushellProposal) {
+      this.nushellProposals.delete(proposalId);
+      this.updateBatchResult(proposalId, {
+        success: false,
+        output: "",
+        error: `Nushell command "${nushellProposal.command.command}" rejected by human: ${reason}`,
+      });
+      return;
+    }
+
     // Check if this is an MCP tool proposal
     const mcpProposal = this.mcpToolProposals.get(proposalId);
     if (mcpProposal) {
@@ -1028,9 +1056,47 @@ export class ClaudeAgent {
   /**
    * Get all available tools (builtin + MCP) for LLM provider
    */
+  /**
+   * Detect nushell availability at startup.
+   * Checks env vars first, then probes PATH.
+   */
+  private detectNushell(): void {
+    // Check env vars first
+    const envPath = process.env.PVP_NUSHELL_PATH || process.env.NUSHELL_PATH;
+    if (envPath) {
+      this.nushellPath = envPath;
+      this.nushellToolHandler = createNushellToolHandler();
+      logger.info({ nushellPath: envPath }, "Nushell detected via environment variable");
+      return;
+    }
+
+    // Probe for nu on PATH using synchronous spawnSync
+    try {
+      const result = Bun.spawnSync(["which", "nu"], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const path = new TextDecoder().decode(result.stdout).trim();
+      if (result.exitCode === 0 && path) {
+        this.nushellPath = path;
+        this.nushellToolHandler = createNushellToolHandler();
+        logger.info({ nushellPath: path }, "Nushell detected on PATH");
+      } else {
+        logger.info("Nushell not available");
+      }
+    } catch {
+      logger.info("Nushell not available (detection failed)");
+    }
+  }
+
   private getAllTools(): ToolDefinition[] {
     // Start with builtin tool definitions
     const tools: ToolDefinition[] = [...BUILTIN_TOOL_DEFINITIONS];
+
+    // Conditionally add nushell tool when available
+    if (this.nushellPath) {
+      tools.push(NUSHELL_TOOL_DEFINITION);
+    }
 
     // Add MCP tools with namespaced names
     for (const mcpTool of this.mcpManager.getAllTools()) {
@@ -1042,6 +1108,65 @@ export class ClaudeAgent {
     }
 
     return tools;
+  }
+
+  public async proposeNushellCommand(command: string, rawOutput: boolean, toolUseId?: string): Promise<MessageId> {
+    if (!this.sessionId) {
+      throw new Error("Not connected to a session");
+    }
+    if (!this.nushellPath || !this.nushellToolHandler) {
+      throw new Error("Nushell is not available");
+    }
+
+    try {
+      const nuCmd = categorizeNushellCommand(command, rawOutput);
+
+      if (this.workingDirectory) {
+        nuCmd.cwd = this.workingDirectory;
+      }
+
+      const proposalMsg = this.nushellToolHandler.proposeCommand(
+        nuCmd,
+        this.sessionId,
+        this.participantId
+      );
+
+      // Store the proposal for later execution
+      this.nushellProposals.set(proposalMsg.id, {
+        command: nuCmd,
+        nuPath: this.nushellPath,
+        toolUseId: toolUseId || "",
+      });
+
+      // Track Claude's tool use ID if provided
+      if (toolUseId) {
+        this.toolUseIdToProposalId.set(proposalMsg.id, toolUseId);
+
+        if (this.pendingToolBatch) {
+          const batchEntry = this.pendingToolBatch.tools.get(toolUseId);
+          if (batchEntry) {
+            batchEntry.proposalId = proposalMsg.id;
+          }
+        }
+      }
+
+      this.client.send(proposalMsg);
+
+      logger.info({
+        proposalId: proposalMsg.id,
+        toolUseId,
+        command,
+        rawOutput,
+        category: nuCmd.category,
+        riskLevel: nuCmd.riskLevel,
+        requiresApproval: nuCmd.requiresApproval,
+      }, "Proposed nushell command");
+
+      return proposalMsg.id;
+    } catch (error) {
+      logger.error({ error, command }, "Failed to propose nushell command");
+      throw error;
+    }
   }
 
   public async proposeShellCommand(command: string, toolUseId?: string): Promise<MessageId> {
@@ -1745,6 +1870,69 @@ export class ClaudeAgent {
     } catch (error) {
       logger.error({ error, proposalId }, "Npm operation failed");
       this.npmProposals.delete(proposalId);
+
+      this.updateBatchResult(proposalId, {
+        success: false,
+        output: "",
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  }
+
+  private async executeNushellCommand(proposalId: MessageId): Promise<void> {
+    if (!this.sessionId) return;
+
+    const proposal = this.nushellProposals.get(proposalId);
+    if (!proposal) {
+      logger.warn({ proposalId }, "Nushell proposal not found");
+      return;
+    }
+
+    const { command: nuCmd, nuPath } = proposal;
+
+    logger.info({
+      proposalId,
+      command: nuCmd.command,
+      category: nuCmd.category,
+      riskLevel: nuCmd.riskLevel,
+    }, "Executing approved nushell command");
+
+    try {
+      let toolResult: { success: boolean; output: string; error?: string } | null = null;
+
+      await this.nushellToolHandler!.executeCommand(
+        proposalId,
+        nuCmd,
+        nuPath,
+        this.sessionId,
+        this.participantId,
+        (msg: AnyMessage) => {
+          this.client.send(msg);
+
+          if (msg.type === "tool.result") {
+            const payload = msg.payload as { success: boolean; result?: unknown; error?: string };
+            const result = payload.result as { stdout?: string; stderr?: string; structured?: unknown } | undefined;
+            const output = result?.structured
+              ? JSON.stringify(result.structured)
+              : (result?.stdout || "");
+            toolResult = {
+              success: payload.success,
+              output,
+              error: payload.error,
+            };
+          }
+        },
+        this.workingDirectory ?? undefined
+      );
+
+      this.nushellProposals.delete(proposalId);
+
+      if (toolResult) {
+        this.updateBatchResult(proposalId, toolResult);
+      }
+    } catch (error) {
+      logger.error({ error, proposalId }, "Nushell command execution failed");
+      this.nushellProposals.delete(proposalId);
 
       this.updateBatchResult(proposalId, {
         success: false,
@@ -2779,6 +2967,21 @@ export class ClaudeAgent {
           }
           logger.info({ command: input.command, toolUseId: toolUse.id }, "Claude requested shell command execution");
           await this.proposeShellCommand(input.command, toolUse.id);
+        } else if (toolUse.name === "execute_nushell_command") {
+          const input = toolUse.input as { command: string; raw_output?: boolean };
+          if (!input.command) {
+            logger.error({ toolUseId: toolUse.id }, "Nushell command input missing command field");
+            this.markToolFailed(toolUse.id,
+              `TOOL VALIDATION FAILED: execute_nushell_command is missing the required "command" field. ` +
+              `CRITICAL INSTRUCTION: You MUST now do the following in order: ` +
+              `1) Explain to the user in plain language what you were trying to do and exactly what went wrong with your tool call. ` +
+              `2) Ask the user whether they want you to retry the operation or do something else instead. ` +
+              `3) WAIT for the user's response before taking any further action. DO NOT automatically retry.`
+            );
+            continue;
+          }
+          logger.info({ command: input.command, rawOutput: input.raw_output, toolUseId: toolUse.id }, "Claude requested nushell command execution");
+          await this.proposeNushellCommand(input.command, input.raw_output || false, toolUse.id);
         } else if (toolUse.name === "file_write") {
           const input = toolUse.input as { path: string; content: string; create_dirs?: boolean };
           if (!input.path || input.content === undefined) {

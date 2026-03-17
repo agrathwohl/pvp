@@ -29,6 +29,7 @@ export type {
 
   // Specific result types
   ShellExecutionResult,
+  NushellExecutionResult,
   FileOperationResult,
   GitCommitResult,
   NotebookExecutionResult,
@@ -47,6 +48,7 @@ export {
   type ToolCallHandler,
   type MCPToolChecker,
   type ShellCommandInput,
+  type NushellCommandInput,
   type FileWriteInput,
   type FileEditInput,
   type GitCommitInput,

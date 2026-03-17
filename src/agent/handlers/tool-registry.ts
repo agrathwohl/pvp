@@ -21,6 +21,11 @@ export interface ShellCommandInput {
   command: string;
 }
 
+export interface NushellCommandInput {
+  command: string;
+  raw_output?: boolean;
+}
+
 export interface FileWriteInput {
   path: string;
   content: string;
@@ -66,6 +71,7 @@ export interface TasksInput {
 
 export type ToolInput =
   | ShellCommandInput
+  | NushellCommandInput
   | FileWriteInput
   | FileEditInput
   | GitCommitInput
@@ -101,6 +107,15 @@ export function validateToolInput(toolName: string, input: unknown): ValidationR
     case TOOL_NAMES.SHELL:
       if (!data.command || typeof data.command !== "string") {
         return { valid: false, error: "Missing or invalid command field (must be string)" };
+      }
+      break;
+
+    case TOOL_NAMES.NUSHELL:
+      if (!data.command || typeof data.command !== "string") {
+        return { valid: false, error: "Missing or invalid command field (must be string)" };
+      }
+      if (data.raw_output !== undefined && typeof data.raw_output !== "boolean") {
+        return { valid: false, error: "Invalid raw_output field (must be boolean)" };
       }
       break;
 
@@ -205,6 +220,8 @@ export type MCPToolChecker = (toolName: string) => boolean;
 export interface ToolRegistryConfig {
   /** Handler for shell commands */
   onShellCommand: (input: ShellCommandInput, toolUseId: string) => Promise<void>;
+  /** Handler for nushell commands */
+  onNushellCommand: (input: NushellCommandInput, toolUseId: string) => Promise<void>;
   /** Handler for file writes */
   onFileWrite: (input: FileWriteInput, toolUseId: string) => Promise<void>;
   /** Handler for file edits */
@@ -266,6 +283,13 @@ export class ToolRegistry {
           const shellInput = input as ShellCommandInput;
           logger.info({ command: shellInput.command, toolUseId }, "Dispatching shell command");
           await this.config.onShellCommand(shellInput, toolUseId);
+          break;
+        }
+
+        case TOOL_NAMES.NUSHELL: {
+          const nuInput = input as NushellCommandInput;
+          logger.info({ command: nuInput.command, rawOutput: nuInput.raw_output, toolUseId }, "Dispatching nushell command");
+          await this.config.onNushellCommand(nuInput, toolUseId);
           break;
         }
 

@@ -334,6 +334,29 @@ Use this for monitoring:
 };
 
 // ===========================================================================
+// Nushell Tool (conditionally registered — only when nu is available)
+// ===========================================================================
+
+export const NUSHELL_TOOL_DEFINITION: ToolDefinition = {
+  name: "execute_nushell_command",
+  description: "Execute a command using nushell (nu). PREFERRED over execute_shell_command when available. Nushell provides structured data output — commands return typed tables/records instead of raw text. Use this for any command where structured output is valuable: file listings, process info, data queries, JSON/CSV/XML processing. The command string should use nushell syntax. Output is returned as structured data when possible.",
+  input_schema: {
+    type: "object",
+    properties: {
+      command: {
+        type: "string",
+        description: "The nushell command to execute (nu syntax, e.g., 'ls | where size > 1mb', 'open data.csv | where status == active')"
+      },
+      raw_output: {
+        type: "boolean",
+        description: "If true, return raw text output instead of structured JSON (default: false)"
+      }
+    },
+    required: ["command"]
+  }
+};
+
+// ===========================================================================
 // Combined Export
 // ===========================================================================
 
@@ -357,6 +380,7 @@ export const BUILTIN_TOOL_DEFINITIONS: ToolDefinition[] = [
  */
 export const TOOL_NAMES = {
   SHELL: "execute_shell_command",
+  NUSHELL: "execute_nushell_command",
   FILE_WRITE: "file_write",
   FILE_EDIT: "file_edit",
   GIT_COMMIT: "git_commit",
