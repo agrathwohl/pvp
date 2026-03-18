@@ -79,6 +79,7 @@ export class WebSocketTransportServer extends EventEmitter implements TransportS
   private wss: WebSocketServer;
   private transports: Map<ParticipantId, WebSocketTransport> = new Map();
   private bridgeProxy: BridgeProxyConfig | null = null;
+  private transcriptHandler: ((sessionId: string, messageIds: string[] | null, res: ServerResponse) => void) | null = null;
 
   constructor(port: number, host: string = "0.0.0.0") {
     super();
@@ -138,6 +139,10 @@ export class WebSocketTransportServer extends EventEmitter implements TransportS
     logger.info({ bridgeHost: config.bridgeHost, bridgePort: config.bridgePort }, "Bridge proxy configured");
   }
 
+  setTranscriptHandler(handler: (sessionId: string, messageIds: string[] | null, res: ServerResponse) => void): void {
+    this.transcriptHandler = handler;
+  }
+
   /**
    * Handle HTTP requests - proxy /bridge/* to bridge service, return 404 for others
    */
@@ -158,6 +163,17 @@ export class WebSocketTransportServer extends EventEmitter implements TransportS
     // Proxy /bridge/* requests to bridge service
     if (url.startsWith("/bridge/")) {
       this.proxyToBridge(req, res, url.slice(7)); // Remove "/bridge" prefix
+      return;
+    }
+
+    // Session transcript endpoint: /sessions/{sessionId}/transcript?messages=id1,id2
+    const transcriptMatch = url.match(/^\/sessions\/([^/]+)\/transcript/);
+    if (transcriptMatch && this.transcriptHandler) {
+      const sessionId = transcriptMatch[1];
+      const urlObj = new URL(url, `http://${req.headers.host || "localhost"}`);
+      const messageIdsParam = urlObj.searchParams.get("messages");
+      const messageIds = messageIdsParam ? messageIdsParam.split(",") : null;
+      this.transcriptHandler(sessionId, messageIds, res);
       return;
     }
 

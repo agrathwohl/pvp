@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Box, Text, useInput, useApp } from "ink";
 import { useTUIStore } from "./store.js";
 import { StructuredOutput } from "./structured-output.js";
-import type { ParticipantId } from "../protocol/types.js";
+import type { ParticipantId, AnyMessage } from "../protocol/types.js";
 import type { TaskItem } from "./store.js";
 
 export function App({
@@ -48,10 +48,15 @@ export function App({
     toggleThinking,
     toggleDebug,
     toggleTasks,
+    toggleTranscript,
     fetchDecisionTracking,
+    fetchTranscriptForLastCommit,
     tasksState,
     tasksVisible,
     joinNotifications,
+    transcriptMessages,
+    transcriptVisible,
+    transcriptCommit,
   } = useTUIStore();
 
   const [targetAgent, setTargetAgent] = useState<ParticipantId>("");
@@ -135,6 +140,10 @@ export function App({
         toggleDebug();
       } else if (input === "g") {
         toggleTasks();
+      } else if (input === "h") {
+        fetchTranscriptForLastCommit();
+      } else if (input === "H") {
+        toggleTranscript();
       }
     } else if (mode === "compose") {
       if (key.escape) {
@@ -243,6 +252,39 @@ export function App({
               ))}
             </Box>
           )}
+        </Box>
+      )}
+
+      {/* Transcript Viewer — conversation context for last commit */}
+      {transcriptVisible && transcriptMessages && (
+        <Box borderStyle="round" borderColor="yellow" paddingX={1} flexDirection="column" height={15}>
+          <Text bold color="yellow">
+            📜 Commit Transcript {transcriptCommit ? `(${transcriptCommit.slice(0, 7)})` : ""}
+            <Text dimColor> — {transcriptMessages.length} messages | H to close</Text>
+          </Text>
+          <Box flexDirection="column" overflow="hidden">
+            {transcriptMessages.slice(-10).map((msg: AnyMessage) => (
+              <Box key={msg.id}>
+                <Text dimColor>{msg.ts ? new Date(msg.ts).toLocaleTimeString() : ""} </Text>
+                <Text color={
+                  msg.type === "prompt.submit" ? "green" :
+                  msg.type.startsWith("response") ? "blue" :
+                  msg.type.startsWith("tool") ? "yellow" :
+                  msg.type.startsWith("gate") ? "magenta" :
+                  "white"
+                }>
+                  [{msg.type}]
+                </Text>
+                <Text> {
+                  msg.type === "prompt.submit" ? (msg.payload as { content?: string }).content?.slice(0, 60) || "" :
+                  msg.type === "tool.propose" ? `${(msg.payload as { tool_name?: string }).tool_name}: ${(msg.payload as { description?: string }).description?.slice(0, 50) || ""}` :
+                  msg.type === "tool.result" ? `${(msg.payload as { success?: boolean }).success ? "✓" : "✗"} (${(msg.payload as { duration_ms?: number }).duration_ms}ms)` :
+                  msg.type === "response.chunk" ? (msg.payload as { text?: string }).text?.slice(0, 60) || "" :
+                  msg.type
+                }</Text>
+              </Box>
+            ))}
+          </Box>
         </Box>
       )}
 

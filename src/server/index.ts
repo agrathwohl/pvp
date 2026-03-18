@@ -29,8 +29,10 @@
  */
 
 import { Command } from "commander";
-import { mkdir } from "fs/promises";
+import { mkdir, readFile } from "fs/promises";
+import { existsSync } from "fs";
 import { execSync } from "child_process";
+import type { ServerResponse } from "http";
 import path from "path";
 import { WebSocketTransportServer } from "../transports/websocket.js";
 import { Session } from "./session.js";
@@ -39,6 +41,7 @@ import { createMessage } from "../protocol/messages.js";
 import { createLogger } from "../utils/logger.js";
 import { mergeServerConfig, type ServerConfig } from "../config/server-config.js";
 import { PvpGitBridgeService } from "../git-hooks/bridge/bridge-service.js";
+import { SessionLogger } from "./session-logger.js";
 import type { ParticipantInfo } from "../git-hooks/bridge/types.js";
 import type {
   SessionId,
@@ -81,18 +84,25 @@ class PVPServer {
   private heartbeatIntervals: Map<ParticipantId, NodeJS.Timeout> = new Map();
   private config: ServerConfig;
   private bridgeService: PvpGitBridgeService;
+  private sessionLogger: SessionLogger;
 
   constructor(config: ServerConfig) {
     this.config = config;
     this.transportServer = new WebSocketTransportServer(config.port, config.host);
     this.router = new MessageRouter();
     this.bridgeService = new PvpGitBridgeService();
+    this.sessionLogger = new SessionLogger();
 
     // Configure bridge API proxy through HTTP server
     // This allows remote TUI clients to access bridge via wss://server:port/bridge/*
     this.transportServer.setBridgeProxy({
       bridgeHost: "127.0.0.1",
       bridgePort: 9847,
+    });
+
+    // Configure session transcript endpoint
+    this.transportServer.setTranscriptHandler((sessionId, messageIds, res) => {
+      this.handleTranscriptRequest(sessionId, messageIds, res);
     });
 
     // Start the git bridge service for decision tracking
@@ -162,6 +172,9 @@ class PVPServer {
       };
 
       await this.router.route(session, message, broadcast);
+
+      // Persist message to session transcript
+      this.sessionLogger.writeMessage(session.getId(), message);
 
       // Forward message to bridge service for decision tracking
       this.bridgeService.onMessage(message);
@@ -453,6 +466,48 @@ class PVPServer {
    * });
    * ```
    */
+  /**
+   * Handle HTTP requests for session transcripts.
+   * GET /sessions/{sessionId}/transcript — full transcript
+   * GET /sessions/{sessionId}/transcript?messages=id1,id2 — specific messages
+   */
+  private async handleTranscriptRequest(
+    sessionId: string,
+    messageIds: string[] | null,
+    res: ServerResponse
+  ): Promise<void> {
+    const logPath = this.sessionLogger.getSessionLogPath(sessionId);
+    const headers = {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*",
+    };
+
+    if (!existsSync(logPath)) {
+      res.writeHead(404, headers);
+      res.end(JSON.stringify({ error: "Session transcript not found", sessionId }));
+      return;
+    }
+
+    try {
+      const content = await readFile(logPath, "utf-8");
+      const lines = content.trim().split("\n").filter(Boolean);
+      let messages = lines.map(line => JSON.parse(line));
+
+      // Filter to specific message IDs if requested
+      if (messageIds && messageIds.length > 0) {
+        const idSet = new Set(messageIds);
+        messages = messages.filter(msg => idSet.has(msg.id));
+      }
+
+      res.writeHead(200, headers);
+      res.end(JSON.stringify({ sessionId, count: messages.length, messages }));
+    } catch (err) {
+      logger.error({ error: (err as Error).message, sessionId }, "Failed to read session transcript");
+      res.writeHead(500, headers);
+      res.end(JSON.stringify({ error: "Failed to read transcript" }));
+    }
+  }
+
   shutdown(): void {
     logger.info("Shutting down server");
 
@@ -464,6 +519,9 @@ class PVPServer {
 
     // Close transport server
     this.transportServer.close();
+
+    // Close session logger
+    this.sessionLogger.close();
 
     // End all sessions and notify bridge service
     for (const session of this.sessions.values()) {

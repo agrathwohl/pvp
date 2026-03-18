@@ -521,15 +521,19 @@ See `examples/` directory for complete examples:
 
 ## TUI Controls
 
-| Key          | Mode    | Action                 |
-| ------------ | ------- | ---------------------- |
-| `p`          | stream  | Start composing prompt |
-| `Ctrl+Enter` | compose | Submit prompt          |
-| `Esc`        | compose | Cancel composition     |
-| `a`          | gate    | Approve gate           |
-| `r`          | gate    | Reject gate            |
-| `t`          | stream  | Toggle thinking panel  |
-| `Ctrl+C`     | any     | Exit                   |
+| Key          | Mode    | Action                              |
+| ------------ | ------- | ------------------------------------ |
+| `p`          | stream  | Start composing prompt               |
+| `Ctrl+Enter` | compose | Submit prompt                        |
+| `Esc`        | compose | Cancel composition                   |
+| `a`          | gate    | Approve gate                         |
+| `r`          | gate    | Reject gate                          |
+| `t`          | stream  | Toggle thinking panel                |
+| `d`          | stream  | Toggle debug panel                   |
+| `g`          | stream  | Toggle tasks panel                   |
+| `h`          | stream  | Show transcript for last git commit  |
+| `H`          | stream  | Toggle transcript panel              |
+| `Ctrl+C`     | any     | Exit                                 |
 
 ## Protocol Specification
 

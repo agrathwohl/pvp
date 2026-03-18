@@ -136,6 +136,11 @@ export interface TUIState {
   mentionRouting: Map<MessageId, MentionRoutingInfo>;
   lastIgnoredMention: MentionRoutingInfo | null;
 
+  // Transcript viewer
+  transcriptMessages: AnyMessage[] | null;
+  transcriptVisible: boolean;
+  transcriptCommit: string | null;
+
   // UI state
   mode: TUIMode;
   draftPrompt: string;
@@ -161,8 +166,10 @@ export interface TUIState {
   toggleThinking: () => void;
   toggleDebug: () => void;
   toggleTasks: () => void;
+  toggleTranscript: () => void;
   setError: (error: string | null) => void;
   fetchDecisionTracking: () => Promise<void>;
+  fetchTranscriptForLastCommit: () => Promise<void>;
 }
 
 export const useTUIStore = create<TUIState>((set, get) => ({
@@ -203,6 +210,9 @@ export const useTUIStore = create<TUIState>((set, get) => ({
   error: null,
   debugLog: [],
   debugVisible: false,
+  transcriptMessages: null,
+  transcriptVisible: false,
+  transcriptCommit: null,
 
   // Actions
   connect: (url, sessionId, participantId, name, role, isCreator) => {
@@ -776,6 +786,46 @@ export const useTUIStore = create<TUIState>((set, get) => ({
       set((state) => ({
         decisionTracking: { ...state.decisionTracking, bridgeConnected: false },
       }));
+    }
+  },
+
+  toggleTranscript: () => {
+    set((state) => ({ transcriptVisible: !state.transcriptVisible }));
+  },
+
+  fetchTranscriptForLastCommit: async () => {
+    const { bridgeBaseUrl, sessionId } = get();
+    if (!bridgeBaseUrl || !sessionId) return;
+
+    try {
+      // Get extended metadata from bridge to find message IDs for last commit
+      const metaResponse = await fetch(`${bridgeBaseUrl}/extended-metadata`);
+      if (!metaResponse.ok) return;
+
+      const meta = await metaResponse.json();
+      const lastCommit = meta.last_commit_hash;
+      if (!lastCommit) return;
+
+      // Fetch transcript with the session's message IDs
+      const messageIds = meta.message_ids as string[] | undefined;
+      const queryParam = messageIds?.length ? `?messages=${messageIds.join(",")}` : "";
+
+      // The transcript endpoint is on the main server, same host:port as bridge proxy
+      // bridgeBaseUrl is like "http://localhost:3000/bridge" — strip "/bridge" suffix
+      const serverBaseUrl = bridgeBaseUrl.replace(/\/bridge\/?$/, "");
+      const transcriptUrl = `${serverBaseUrl}/sessions/${sessionId}/transcript${queryParam}`;
+
+      const response = await fetch(transcriptUrl);
+      if (response.ok) {
+        const data = await response.json();
+        set({
+          transcriptMessages: data.messages || [],
+          transcriptCommit: lastCommit,
+          transcriptVisible: true,
+        });
+      }
+    } catch {
+      // Non-critical — transcript fetch is best-effort
     }
   },
 }));
