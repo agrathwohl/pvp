@@ -13,6 +13,7 @@ export interface NushellCommand {
   maxBuffer?: number;
   cwd?: string;
   rawOutput: boolean;
+  schemaOnly: boolean;
 }
 
 export interface NushellExecutionConfig {
@@ -48,46 +49,86 @@ const SAFE_COMMANDS: string[] = [
   // System info
   "sys", "ps", "version", "which", "uname",
   // Data inspection
-  "describe", "length", "columns", "values", "metadata",
-  // Data transformation (no side effects)
+  "describe", "length", "size", "columns", "values", "metadata",
+  // Data transformation (no side effects — pure pipeline operations)
   "get", "select", "where", "sort-by", "group-by", "reverse",
   "first", "last", "skip", "take", "flatten", "transpose",
   "enumerate", "zip", "merge", "uniq", "compact", "reject",
-  // Format conversion (output only)
+  "rotate", "roll", "move", "insert", "update", "upsert",
+  "append", "prepend", "collect", "reduce", "each", "par-each",
+  "filter", "find", "any", "all", "empty",
+  "wrap", "unwrap", "default", "fill",
+  // Format conversion (output only — no file writes)
   "to", "from",
   // String operations
   "str", "split", "parse", "detect", "lines",
-  // Math
-  "math", "seq", "generate",
-  // Path operations
+  // Math & numeric
+  "math", "seq", "generate", "random",
+  // Path operations (inspection only)
   "path",
   // Date/time
   "date", "cal",
   // Help/introspection
-  "help", "input",
+  "help", "input", "input list",
   // Type conversion
   "into",
   // Misc read-only
   "ansi", "char", "debug", "explain", "timeit",
   "format", "print", "echo",
+  // History
+  "history",
   // HTTP GET (read-only)
-  "http get",
+  "http get", "http head", "http options",
+  // Nu plugin read-only commands
+  "query json", "query xml", "query web",  // query plugin — read-only queries
+  "gstat",                                  // gstat plugin — git status as structured data
+  "from parquet", "from arrow", "from bson", // formats plugin — read operations
+  "from sqlite",                            // formats plugin — read from sqlite
+  "llm",                                    // llm plugin — text generation/queries
+];
+
+// Safe external commands (passthrough via ^cmd) — low risk, auto-approve
+const SAFE_EXTERNAL_COMMANDS: string[] = [
+  "grep", "find", "cat", "head", "tail", "wc", "diff", "less", "more",
+  "git status", "git log", "git diff", "git show", "git branch",
+  "docker ps", "docker images", "docker logs",
+  "kubectl get", "kubectl describe",
+  "systemctl status", "journalctl",
+  "curl", "wget",
 ];
 
 // Write operations — require approval
 const WRITE_COMMANDS: string[] = [
+  // File mutations
   "save", "cp", "mv", "mkdir", "touch", "ln",
-  "git add", "git commit", "git stash",
-  "npm install", "npm add", "bun add", "yarn add",
+  // Git write operations
+  "git add", "git commit", "git stash", "git push", "git merge", "git rebase", "git checkout",
+  // Package managers
+  "npm install", "npm add", "npm remove",
+  "bun add", "bun remove", "bun install",
+  "yarn add", "yarn remove",
+  "pnpm add", "pnpm remove",
+  // HTTP mutations
   "http post", "http put", "http patch", "http delete",
+  // Docker write
+  "docker build", "docker run", "docker exec", "docker pull",
+  // Kubectl write
+  "kubectl apply", "kubectl create", "kubectl edit", "kubectl patch",
+  // Plugin write commands
+  "query db",  // query plugin — can execute SQL mutations
+  "to parquet", "to arrow", "to bson",  // formats plugin — file writes
+  "to sqlite",                          // formats plugin — write to sqlite
 ];
 
 // Destructive operations — high risk, require quorum
 const DESTRUCTIVE_COMMANDS: string[] = [
   "rm",
   "git reset", "git clean", "git push --force",
-  "kill",
-  "docker stop", "docker kill", "docker rm",
+  "kill", "pkill",
+  "docker stop", "docker kill", "docker rm", "docker rmi",
+  "kubectl delete",
+  "npm uninstall", "bun remove",
+  "truncate",
 ];
 
 // Blocked operations — never execute
@@ -100,6 +141,8 @@ const BLOCKED_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /^reboot/, reason: "System reboot" },
   { pattern: /^halt/, reason: "System halt" },
   { pattern: /^poweroff/, reason: "System poweroff" },
+  { pattern: /^mkfs/, reason: "Filesystem creation" },
+  { pattern: /^fdisk/, reason: "Disk partitioning" },
 ];
 
 // Output redirect operators in nu elevate risk to write
@@ -125,8 +168,20 @@ function commandStartsWith(cmdStr: string, prefix: string): boolean {
  * Categorizes a nushell command by risk level.
  * Conservative: unknown commands default to write/medium (require approval).
  */
-export function categorizeNushellCommand(command: string, rawOutput: boolean = false): NushellCommand {
+export function categorizeNushellCommand(command: string, rawOutput: boolean = false, schemaOnly: boolean = false): NushellCommand {
   const trimmed = command.trim();
+
+  // Schema probes are always read-only and safe — they only inspect structure
+  if (schemaOnly) {
+    return {
+      command: trimmed,
+      category: "read",
+      riskLevel: "safe",
+      requiresApproval: false,
+      rawOutput: false,
+      schemaOnly: true,
+    };
+  }
 
   // Check blocked patterns first
   for (const { pattern } of BLOCKED_PATTERNS) {
@@ -137,6 +192,7 @@ export function categorizeNushellCommand(command: string, rawOutput: boolean = f
         riskLevel: "critical",
         requiresApproval: true,
         rawOutput,
+        schemaOnly: false,
       };
     }
   }
@@ -149,6 +205,7 @@ export function categorizeNushellCommand(command: string, rawOutput: boolean = f
       riskLevel: "medium",
       requiresApproval: true,
       rawOutput,
+      schemaOnly: false,
     };
   }
 
@@ -167,6 +224,7 @@ export function categorizeNushellCommand(command: string, rawOutput: boolean = f
           riskLevel: "high",
           requiresApproval: true,
           rawOutput,
+          schemaOnly: false,
         };
       }
     }
@@ -188,6 +246,7 @@ export function categorizeNushellCommand(command: string, rawOutput: boolean = f
       riskLevel: highestRisk,
       requiresApproval: true,
       rawOutput,
+      schemaOnly: false,
     };
   }
 
@@ -204,18 +263,33 @@ export function categorizeNushellCommand(command: string, rawOutput: boolean = f
         riskLevel: "safe",
         requiresApproval: false,
         rawOutput,
+        schemaOnly: false,
       };
     }
   }
 
-  // External command passthrough (^cmd) — low risk, approval recommended
+  // External command passthrough (^cmd) — check safe externals first
   if (firstStage.startsWith("^")) {
+    for (const cmd of SAFE_EXTERNAL_COMMANDS) {
+      if (commandStartsWith(normalizedFirst, cmd)) {
+        return {
+          command: trimmed,
+          category: "read",
+          riskLevel: "safe",
+          requiresApproval: false,
+          rawOutput,
+          schemaOnly: false,
+        };
+      }
+    }
+    // Unknown external command — low risk, approval recommended
     return {
       command: trimmed,
       category: "read",
       riskLevel: "low",
       requiresApproval: true,
       rawOutput,
+      schemaOnly: false,
     };
   }
 
@@ -226,6 +300,7 @@ export function categorizeNushellCommand(command: string, rawOutput: boolean = f
     riskLevel: "medium",
     requiresApproval: true,
     rawOutput,
+    schemaOnly: false,
   };
 }
 
@@ -256,6 +331,28 @@ function getDefaultConfig(category: CommandCategory): NushellExecutionConfig {
   }
 }
 
+// Patterns for sensitive environment variables that should not be passed to nu
+const SENSITIVE_ENV_PATTERNS = [
+  /API_KEY$/i, /SECRET/i, /TOKEN$/i, /PASSWORD/i,
+  /DATABASE_URL/i, /CONNECTION_STRING/i,
+  /PRIVATE_KEY/i, /CREDENTIALS/i,
+  /^AWS_SECRET/i, /^ANTHROPIC_API/i, /^OPENAI_API/i,
+];
+
+/**
+ * Sanitize environment variables for nushell execution.
+ * Filters out sensitive keys while preserving PATH, HOME, and other safe vars.
+ */
+export function sanitizeEnvForNu(env: NodeJS.ProcessEnv): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value && !SENSITIVE_ENV_PATTERNS.some(p => p.test(key))) {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
 /**
  * Check if command already has a format converter in the pipeline
  */
@@ -266,11 +363,15 @@ function hasFormatConverter(command: string): boolean {
 
 /**
  * Prepare the command string for execution.
- * Appends `| to json` for structured output unless:
- * - raw_output is true
- * - command already has a format converter
+ * - schema_only: rewrites to probe output structure
+ * - raw_output: runs as-is
+ * - default: appends `| to json` for structured output
  */
-function prepareCommand(command: string, rawOutput: boolean): string {
+function prepareCommand(command: string, rawOutput: boolean, schemaOnly: boolean): string {
+  if (schemaOnly) {
+    // Probe schema: run command, take first row, describe its structure
+    return `${command} | first 1 | describe | to json`;
+  }
   if (rawOutput) return command;
   if (hasFormatConverter(command)) return command;
   return `${command} | to json`;
@@ -313,7 +414,7 @@ export async function executeNushellCommand(
     streaming: config.streaming ?? defaultCfg.streaming,
   };
 
-  const preparedCommand = prepareCommand(cmd.command, cmd.rawOutput);
+  const preparedCommand = prepareCommand(cmd.command, cmd.rawOutput, cmd.schemaOnly);
 
   let proc: Subprocess;
   let stdoutData = "";
@@ -321,13 +422,20 @@ export async function executeNushellCommand(
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
 
   try {
+    // Load user config by default so plugins are available.
+    // Set PVP_NUSHELL_NO_CONFIG=true to skip user config for isolated execution.
+    const skipConfig = process.env.PVP_NUSHELL_NO_CONFIG === "true";
+    const nuArgs = skipConfig
+      ? [nuPath, "--no-config-file", "-c", preparedCommand]
+      : [nuPath, "-c", preparedCommand];
+
     // Spawn nu directly — no /bin/sh wrapper needed
-    proc = spawn([nuPath, "--no-config-file", "-c", preparedCommand], {
+    proc = spawn(nuArgs, {
       stdout: "pipe",
       stderr: "pipe",
       stdin: "ignore",
       cwd: cmd.cwd,
-      env: process.env,
+      env: sanitizeEnvForNu(process.env),
     });
 
     // Timeout enforcement

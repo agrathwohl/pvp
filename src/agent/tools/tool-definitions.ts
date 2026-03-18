@@ -350,6 +350,10 @@ export const NUSHELL_TOOL_DEFINITION: ToolDefinition = {
       raw_output: {
         type: "boolean",
         description: "If true, return raw text output instead of structured JSON (default: false)"
+      },
+      schema_only: {
+        type: "boolean",
+        description: "If true, return only the output schema (column names and types) without executing the full command. Use this to discover what fields a command returns before querying. (default: false)"
       }
     },
     required: ["command"]

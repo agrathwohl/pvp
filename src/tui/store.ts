@@ -85,6 +85,7 @@ export interface ToolOutput {
   stdout: string;
   stderr: string;
   complete: boolean;
+  structured?: unknown;
   result?: {
     success: boolean;
     exitCode?: number;
@@ -565,13 +566,16 @@ export const useTUIStore = create<TUIState>((set, get) => ({
               state.toolOutputs.set(proposalId, output);
             }
 
-            const shellResult = message.payload.result as { exitCode?: number; stdout?: string; stderr?: string } | undefined;
+            const toolResult = message.payload.result as { exitCode?: number; stdout?: string; stderr?: string; structured?: unknown } | undefined;
             output.result = {
               success: message.payload.success,
-              exitCode: shellResult?.exitCode,
+              exitCode: toolResult?.exitCode,
               error: message.payload.error,
               duration_ms: message.payload.duration_ms,
             };
+            if (toolResult?.structured !== undefined) {
+              output.structured = toolResult.structured;
+            }
             output.complete = true;
             set({ toolOutputs: new Map(state.toolOutputs) });
           }

@@ -443,6 +443,21 @@ export type ToolResultPayload = {
   duration_ms: number;
 };
 
+/**
+ * Structured tool result from nushell commands.
+ * The `structured` field contains parsed JSON output when available.
+ */
+export interface StructuredToolResult {
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  structured?: unknown;
+}
+
+export function isStructuredToolResult(result: unknown): result is StructuredToolResult {
+  return typeof result === "object" && result !== null && "exitCode" in result;
+}
+
 // =============================================================================
 // GATE PAYLOADS
 // =============================================================================

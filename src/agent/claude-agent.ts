@@ -73,6 +73,7 @@ export class ClaudeAgent {
   private shellToolHandler: ReturnType<typeof createShellToolHandler>;
   private nushellToolHandler: ReturnType<typeof createNushellToolHandler> | null = null;
   private nushellPath: string | null = null;
+  private nushellPlugins: string[] = [];
   private fileToolHandler: ReturnType<typeof createFileToolHandler>;
   private gitCommitToolHandler: ReturnType<typeof createGitCommitToolHandler>;
   private toolProposals: Map<MessageId, { command: ShellCommand; proposalMsg: AnyMessage }> = new Map();
@@ -552,9 +553,12 @@ export class ClaudeAgent {
       });
 
       // Call LLM provider with tools
+      const nushellSection = this.buildNushellPromptSection();
+      const systemPrompt = nushellSection || undefined;
       const response = await this.provider.createCompletion({
         model: this.model,
         maxTokens: 4096,
+        systemPrompt,
         messages: this.conversationHistory,
         tools: this.getAllTools()
       });
@@ -975,6 +979,7 @@ export class ClaudeAgent {
       const response = await this.provider.createCompletion({
         model: this.model,
         maxTokens: 4096,
+        systemPrompt: this.buildNushellPromptSection() || undefined,
         messages: this.conversationHistory,
         tools: this.getAllTools()
       });
@@ -1066,7 +1071,8 @@ export class ClaudeAgent {
     if (envPath) {
       this.nushellPath = envPath;
       this.nushellToolHandler = createNushellToolHandler();
-      logger.info({ nushellPath: envPath }, "Nushell detected via environment variable");
+      this.detectNushellPlugins(envPath);
+      logger.info({ nushellPath: envPath, plugins: this.nushellPlugins }, "Nushell detected via environment variable");
       return;
     }
 
@@ -1076,16 +1082,81 @@ export class ClaudeAgent {
         stdout: "pipe",
         stderr: "pipe",
       });
-      const path = new TextDecoder().decode(result.stdout).trim();
-      if (result.exitCode === 0 && path) {
-        this.nushellPath = path;
+      const nuPath = new TextDecoder().decode(result.stdout).trim();
+      if (result.exitCode === 0 && nuPath) {
+        this.nushellPath = nuPath;
         this.nushellToolHandler = createNushellToolHandler();
-        logger.info({ nushellPath: path }, "Nushell detected on PATH");
+        this.detectNushellPlugins(nuPath);
+        logger.info({ nushellPath: nuPath, plugins: this.nushellPlugins }, "Nushell detected on PATH");
       } else {
         logger.info("Nushell not available");
       }
     } catch {
       logger.info("Nushell not available (detection failed)");
+    }
+  }
+
+  /**
+   * Detect installed nushell plugins by querying `version`.
+   */
+  /**
+   * Build the nushell capabilities section for the system prompt.
+   * Returns empty string if nushell is not available.
+   */
+  private buildNushellPromptSection(): string {
+    if (!this.nushellPath) return "";
+
+    const pluginInfo = this.nushellPlugins.length > 0
+      ? `\nInstalled plugins: ${this.nushellPlugins.join(", ")}`
+      : "";
+
+    return [
+      `\n## Nushell Available\n`,
+      `You have the \`execute_nushell_command\` tool. It runs commands in nushell and returns structured JSON data.`,
+      pluginInfo,
+      `\nPrefer nushell for:`,
+      `- File operations: \`ls\`, \`glob\`, \`du\`, \`open\``,
+      `- System info: \`sys host\`, \`sys mem\`, \`sys cpu\`, \`sys disks\`, \`ps\``,
+      `- Data processing: \`where\`, \`select\`, \`sort-by\`, \`group-by\`, \`to json\``,
+      `- Querying files: \`open data.csv | where status == "active"\``,
+      `- HTTP requests: \`http get\` (auto-parses JSON responses)`,
+      `\nUse shell for:`,
+      `- Long-running processes, interactive commands`,
+      `- POSIX-specific features (heredocs, process substitution, shell variables)`,
+      `- Piping to external text-processing tools (awk, sed)`,
+      `\n### Output Schemas`,
+      `Use \`schema_only: true\` to probe any command's output structure before querying.`,
+      `Common command schemas you can use without probing:`,
+      `- \`ls\` → [{name, type, size, modified}]`,
+      `- \`ps\` → [{pid, ppid, name, status, cpu, mem, virtual}]`,
+      `- \`sys host\` → {name, os_version, long_os_version, kernel_version, hostname, uptime, boot_time}`,
+      `- \`sys mem\` → {total, free, used, available, "swap total", "swap free", "swap used"}`,
+      `- \`sys cpu\` → [{name, brand, vendor_id, freq, load_average}]`,
+      `- \`sys disks\` → [{device, type, mount, total, free, removable, kind}]`,
+      `- \`sys net\` → [{name, mac, ip: [{address, protocol, loop, multicast}], sent, recv}]`,
+      `- \`glob "pattern"\` → [string]`,
+      `- \`which cmd\` → [{command, path, type}]`,
+      `- \`version\` → {version, major, minor, patch, build_os, features, installed_plugins, ...}`,
+      `- \`open file.json\` → parsed JSON structure`,
+      `- \`open file.csv\` → [{col1, col2, ...}] (auto-parsed)`,
+      `- \`http get url\` → parsed response body (auto-parses JSON)`,
+    ].join("\n");
+  }
+
+  private detectNushellPlugins(nuPath: string): void {
+    try {
+      const result = Bun.spawnSync([nuPath, "-c", "version | get installed_plugins"], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const output = new TextDecoder().decode(result.stdout).trim();
+      if (result.exitCode === 0 && output) {
+        // Output format: "formats 0.111.0, gstat 0.111.0, query 0.111.0"
+        this.nushellPlugins = output.split(",").map(p => p.trim()).filter(Boolean);
+      }
+    } catch {
+      // Plugin detection is non-critical
+      logger.debug("Failed to detect nushell plugins");
     }
   }
 
@@ -1110,7 +1181,7 @@ export class ClaudeAgent {
     return tools;
   }
 
-  public async proposeNushellCommand(command: string, rawOutput: boolean, toolUseId?: string): Promise<MessageId> {
+  public async proposeNushellCommand(command: string, rawOutput: boolean, toolUseId?: string, schemaOnly: boolean = false): Promise<MessageId> {
     if (!this.sessionId) {
       throw new Error("Not connected to a session");
     }
@@ -1119,7 +1190,7 @@ export class ClaudeAgent {
     }
 
     try {
-      const nuCmd = categorizeNushellCommand(command, rawOutput);
+      const nuCmd = categorizeNushellCommand(command, rawOutput, schemaOnly);
 
       if (this.workingDirectory) {
         nuCmd.cwd = this.workingDirectory;
@@ -2814,6 +2885,7 @@ export class ClaudeAgent {
       const response = await this.provider.createCompletion({
         model: this.model,
         maxTokens: 4096,
+        systemPrompt: this.buildNushellPromptSection() || undefined,
         messages: this.conversationHistory,
         tools: this.getAllTools(),
       });
@@ -2968,7 +3040,7 @@ export class ClaudeAgent {
           logger.info({ command: input.command, toolUseId: toolUse.id }, "Claude requested shell command execution");
           await this.proposeShellCommand(input.command, toolUse.id);
         } else if (toolUse.name === "execute_nushell_command") {
-          const input = toolUse.input as { command: string; raw_output?: boolean };
+          const input = toolUse.input as { command: string; raw_output?: boolean; schema_only?: boolean };
           if (!input.command) {
             logger.error({ toolUseId: toolUse.id }, "Nushell command input missing command field");
             this.markToolFailed(toolUse.id,
@@ -2980,8 +3052,8 @@ export class ClaudeAgent {
             );
             continue;
           }
-          logger.info({ command: input.command, rawOutput: input.raw_output, toolUseId: toolUse.id }, "Claude requested nushell command execution");
-          await this.proposeNushellCommand(input.command, input.raw_output || false, toolUse.id);
+          logger.info({ command: input.command, rawOutput: input.raw_output, schemaOnly: input.schema_only, toolUseId: toolUse.id }, "Claude requested nushell command execution");
+          await this.proposeNushellCommand(input.command, input.raw_output || false, toolUse.id, input.schema_only || false);
         } else if (toolUse.name === "file_write") {
           const input = toolUse.input as { path: string; content: string; create_dirs?: boolean };
           if (!input.path || input.content === undefined) {

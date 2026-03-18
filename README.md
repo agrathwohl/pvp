@@ -249,6 +249,40 @@ npm run agent -- \
 - Multi-turn conversation with tool results
 - Session-level task and goal tracking
 - Strict mode for task-aligned execution
+- **Nushell integration** - structured data output when `nu` is available
+
+### Nushell Integration (Recommended)
+
+When [Nushell](https://www.nushell.sh/) is installed, the PVP agent gains a second shell tool (`execute_nushell_command`) that it **prefers** for commands where structured output is valuable. Instead of parsing raw text, the agent receives typed JSON — tables, records, and lists — directly from command output.
+
+**Why this matters for LLMs:**
+
+- **No output parsing errors.** `ls` returns `[{name, type, size, modified}]` not text to regex.
+- **Queryable data.** `ls | where size > 10kb | sort-by size` works natively.
+- **File format awareness.** `open data.csv` auto-parses CSV into records. Same for JSON, TOML, YAML, XML.
+- **Plugin ecosystem.** Nushell plugins extend what the agent can do without writing new PVP tools — parquet files, SQL queries, git status as structured data, and more.
+- **Structured HTTP.** `http get` auto-parses JSON API responses into queryable records.
+
+The agent automatically detects `nu` on PATH (or via `PVP_NUSHELL_PATH` / `NUSHELL_PATH` env vars) and registers the nushell tool alongside the standard shell tool. No configuration required.
+
+```bash
+# Install nushell (https://www.nushell.sh/book/installation.html)
+# Arch/NixOS/Homebrew/Cargo - see nushell docs for your platform
+
+# Verify it works
+nu -c 'version | select version build_os'
+
+# The PVP agent will detect it automatically on next start
+```
+
+**Environment variables:**
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `PVP_NUSHELL_PATH` | Explicit path to `nu` binary | (auto-detect) |
+| `PVP_NUSHELL_NO_CONFIG` | Set to `true` to skip loading user nu config | `false` |
+
+When nushell is available, the agent's system prompt tells it when to prefer `execute_nushell_command` vs `execute_shell_command`. The POSIX shell tool remains available for long-running processes, interactive commands, and POSIX-specific features.
 
 ### Session Tasks
 
@@ -636,6 +670,7 @@ pm2 start dist/server/index.js --name pvp-server
 - [x] Decision tracking system (git-based audit trail)
 - [x] Session tasks and goals with persistence
 - [x] Strict mode for task-aligned agent execution
+- [x] Nushell integration (structured data output, plugin support)
 - [ ] MCP transport support
 - [ ] Agent adapters (Claude, OpenAI, etc.)
 - [ ] Persistent session recovery

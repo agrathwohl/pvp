@@ -24,6 +24,7 @@ export interface ShellCommandInput {
 export interface NushellCommandInput {
   command: string;
   raw_output?: boolean;
+  schema_only?: boolean;
 }
 
 export interface FileWriteInput {

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Box, Text, useInput, useApp } from "ink";
 import { useTUIStore } from "./store.js";
+import { StructuredOutput } from "./structured-output.js";
 import type { ParticipantId } from "../protocol/types.js";
 import type { TaskItem } from "./store.js";
 
@@ -305,19 +306,27 @@ export function App({
                 )}
               </Text>
             )}
-            {msg.type === "tool.result" && (
-              <Box flexDirection="column">
-                <Text color={msg.payload.success ? "green" : "red"}>
-                  {msg.payload.success ? "✓" : "✗"} Tool {msg.payload.success ? "completed" : "failed"}
-                  {" "}({msg.payload.duration_ms}ms)
-                </Text>
-                {msg.payload.error && (
-                  <Text color="red" dimColor>
-                    {" "}└─ Error: {msg.payload.error}
+            {msg.type === "tool.result" && (() => {
+              const toolOut = toolOutputs.get(msg.payload.tool_proposal);
+              return (
+                <Box flexDirection="column">
+                  <Text color={msg.payload.success ? "green" : "red"}>
+                    {msg.payload.success ? "✓" : "✗"} Tool {msg.payload.success ? "completed" : "failed"}
+                    {" "}({msg.payload.duration_ms}ms)
                   </Text>
-                )}
-              </Box>
-            )}
+                  {msg.payload.error && (
+                    <Text color="red" dimColor>
+                      {" "}└─ Error: {msg.payload.error}
+                    </Text>
+                  )}
+                  {toolOut?.structured != null ? (
+                    <Box marginTop={1} marginLeft={2}>
+                      <StructuredOutput data={toolOut.structured} />
+                    </Box>
+                  ) : null}
+                </Box>
+              );
+            })()}
             {msg.type === "tool.approve" && (
               <Text color="green">
                 ✓ Tool approved by{" "}
