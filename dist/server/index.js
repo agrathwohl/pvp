@@ -38,6 +38,7 @@ import { createMessage } from "../protocol/messages.js";
 import { createLogger } from "../utils/logger.js";
 import { mergeServerConfig } from "../config/server-config.js";
 import { PvpGitBridgeService } from "../git-hooks/bridge/bridge-service.js";
+import { SessionLogger } from "./session-logger.js";
 const logger = createLogger("server");
 /**
  * PVP Server - Core server class for the Pair Vibecoding Protocol.
@@ -71,11 +72,13 @@ class PVPServer {
     heartbeatIntervals = new Map();
     config;
     bridgeService;
+    sessionLogger;
     constructor(config) {
         this.config = config;
         this.transportServer = new WebSocketTransportServer(config.port, config.host);
         this.router = new MessageRouter();
         this.bridgeService = new PvpGitBridgeService();
+        this.sessionLogger = new SessionLogger();
         // Configure bridge API proxy through HTTP server
         // This allows remote TUI clients to access bridge via wss://server:port/bridge/*
         this.transportServer.setBridgeProxy({
@@ -135,6 +138,8 @@ class PVPServer {
                 });
             };
             await this.router.route(session, message, broadcast);
+            // Persist message to session transcript
+            this.sessionLogger.writeMessage(session.getId(), message);
             // Forward message to bridge service for decision tracking
             this.bridgeService.onMessage(message);
             // Start heartbeat monitoring for new participants

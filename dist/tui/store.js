@@ -375,13 +375,16 @@ export const useTUIStore = create((set, get) => ({
                             };
                             state.toolOutputs.set(proposalId, output);
                         }
-                        const shellResult = message.payload.result;
+                        const toolResult = message.payload.result;
                         output.result = {
                             success: message.payload.success,
-                            exitCode: shellResult?.exitCode,
+                            exitCode: toolResult?.exitCode,
                             error: message.payload.error,
                             duration_ms: message.payload.duration_ms,
                         };
+                        if (toolResult?.structured !== undefined) {
+                            output.structured = toolResult.structured;
+                        }
                         output.complete = true;
                         set({ toolOutputs: new Map(state.toolOutputs) });
                     }

@@ -215,6 +215,17 @@ export type ToolResultPayload = {
     error?: string;
     duration_ms: number;
 };
+/**
+ * Structured tool result from nushell commands.
+ * The `structured` field contains parsed JSON output when available.
+ */
+export interface StructuredToolResult {
+    exitCode: number | null;
+    stdout: string;
+    stderr: string;
+    structured?: unknown;
+}
+export declare function isStructuredToolResult(result: unknown): result is StructuredToolResult;
 export type GateRequestPayload = {
     action_type: GateActionType;
     action_ref: MessageId;

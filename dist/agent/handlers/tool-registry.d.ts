@@ -8,6 +8,11 @@ import { type BuiltinToolName } from "../tools/tool-definitions.js";
 export interface ShellCommandInput {
     command: string;
 }
+export interface NushellCommandInput {
+    command: string;
+    raw_output?: boolean;
+    schema_only?: boolean;
+}
 export interface FileWriteInput {
     path: string;
     content: string;
@@ -45,7 +50,7 @@ export interface TasksInput {
     priority?: string;
     goal?: string;
 }
-export type ToolInput = ShellCommandInput | FileWriteInput | FileEditInput | GitCommitInput | NotebookExecuteInput | NpmInput | TasksInput | Record<string, unknown>;
+export type ToolInput = ShellCommandInput | NushellCommandInput | FileWriteInput | FileEditInput | GitCommitInput | NotebookExecuteInput | NpmInput | TasksInput | Record<string, unknown>;
 export interface ValidationResult {
     valid: boolean;
     error?: string;
@@ -73,6 +78,8 @@ export type MCPToolChecker = (toolName: string) => boolean;
 export interface ToolRegistryConfig {
     /** Handler for shell commands */
     onShellCommand: (input: ShellCommandInput, toolUseId: string) => Promise<void>;
+    /** Handler for nushell commands */
+    onNushellCommand: (input: NushellCommandInput, toolUseId: string) => Promise<void>;
     /** Handler for file writes */
     onFileWrite: (input: FileWriteInput, toolUseId: string) => Promise<void>;
     /** Handler for file edits */

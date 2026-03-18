@@ -60,6 +60,7 @@ declare class PVPServer {
     private heartbeatIntervals;
     private config;
     private bridgeService;
+    private sessionLogger;
     constructor(config: ServerConfig);
     private handleMessage;
     /**

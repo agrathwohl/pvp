@@ -23,6 +23,14 @@ export function validateToolInput(toolName, input) {
                 return { valid: false, error: "Missing or invalid command field (must be string)" };
             }
             break;
+        case TOOL_NAMES.NUSHELL:
+            if (!data.command || typeof data.command !== "string") {
+                return { valid: false, error: "Missing or invalid command field (must be string)" };
+            }
+            if (data.raw_output !== undefined && typeof data.raw_output !== "boolean") {
+                return { valid: false, error: "Invalid raw_output field (must be boolean)" };
+            }
+            break;
         case TOOL_NAMES.FILE_WRITE:
             if (!data.path || typeof data.path !== "string") {
                 return { valid: false, error: "Missing or invalid path field (must be string)" };
@@ -120,6 +128,12 @@ export class ToolRegistry {
                     const shellInput = input;
                     logger.info({ command: shellInput.command, toolUseId }, "Dispatching shell command");
                     await this.config.onShellCommand(shellInput, toolUseId);
+                    break;
+                }
+                case TOOL_NAMES.NUSHELL: {
+                    const nuInput = input;
+                    logger.info({ command: nuInput.command, rawOutput: nuInput.raw_output, toolUseId }, "Dispatching nushell command");
+                    await this.config.onNushellCommand(nuInput, toolUseId);
                     break;
                 }
                 case TOOL_NAMES.FILE_WRITE: {

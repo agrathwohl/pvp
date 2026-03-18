@@ -36,9 +36,13 @@ export declare class ClaudeAgent {
     private model;
     private conversationHistory;
     private shellToolHandler;
+    private nushellToolHandler;
+    private nushellPath;
+    private nushellPlugins;
     private fileToolHandler;
     private gitCommitToolHandler;
     private toolProposals;
+    private nushellProposals;
     private fileWriteProposals;
     private fileEditProposals;
     private gitCommitProposals;
@@ -85,7 +89,22 @@ export declare class ClaudeAgent {
     /**
      * Get all available tools (builtin + MCP) for LLM provider
      */
+    /**
+     * Detect nushell availability at startup.
+     * Checks env vars first, then probes PATH.
+     */
+    private detectNushell;
+    /**
+     * Detect installed nushell plugins by querying `version`.
+     */
+    /**
+     * Build the nushell capabilities section for the system prompt.
+     * Returns empty string if nushell is not available.
+     */
+    private buildNushellPromptSection;
+    private detectNushellPlugins;
     private getAllTools;
+    proposeNushellCommand(command: string, rawOutput: boolean, toolUseId?: string, schemaOnly?: boolean): Promise<MessageId>;
     proposeShellCommand(command: string, toolUseId?: string): Promise<MessageId>;
     /**
      * Resolve a file path relative to the working directory if not absolute
@@ -138,6 +157,7 @@ export declare class ClaudeAgent {
      * Execute an npm operation after approval
      */
     private executeNpm;
+    private executeNushellCommand;
     /**
      * Get the current session tasks and goals context summary
      * Returns a markdown-formatted string describing the session objective and task status

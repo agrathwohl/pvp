@@ -13,6 +13,7 @@ export declare const NOTEBOOK_EXECUTE_TOOL_DEFINITION: ToolDefinition;
 export declare const NPM_TOOL_DEFINITION: ToolDefinition;
 export declare const TASKS_TOOL_DEFINITION: ToolDefinition;
 export declare const PROCESS_MONITOR_TOOL_DEFINITION: ToolDefinition;
+export declare const NUSHELL_TOOL_DEFINITION: ToolDefinition;
 /**
  * All built-in tool definitions.
  * MCP tools are added dynamically by the agent.
@@ -23,6 +24,7 @@ export declare const BUILTIN_TOOL_DEFINITIONS: ToolDefinition[];
  */
 export declare const TOOL_NAMES: {
     readonly SHELL: "execute_shell_command";
+    readonly NUSHELL: "execute_nushell_command";
     readonly FILE_WRITE: "file_write";
     readonly FILE_EDIT: "file_edit";
     readonly GIT_COMMIT: "git_commit";

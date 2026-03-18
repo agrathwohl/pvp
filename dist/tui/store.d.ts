@@ -61,6 +61,7 @@ export interface ToolOutput {
     stdout: string;
     stderr: string;
     complete: boolean;
+    structured?: unknown;
     result?: {
         success: boolean;
         exitCode?: number;

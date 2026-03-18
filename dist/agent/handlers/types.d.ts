@@ -177,3 +177,13 @@ export interface TasksOperationResult extends ToolExecutionResult {
     operation: string;
     result?: unknown;
 }
+/**
+ * Nushell command execution result.
+ */
+export interface NushellExecutionResult extends ToolExecutionResult {
+    exitCode: number;
+    stdout: string;
+    stderr: string;
+    command: string;
+    structured: unknown | null;
+}
